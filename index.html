@@ -6,6 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="台本ノート">
+<meta name="theme-color" content="#1c1c1e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
 <title>台本ノート</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -60,6 +63,8 @@
     <button id="bPage" title="ページ番号を指定して移動">-</button>
     <button id="bRight">▶</button>
     <span id="status"></span>
+    <span id="net"></span>
+    <button id="bUpdate" hidden title="新しい版に切り替えます（作業内容は保持されます）">更新</button>
   </div>
 </div>
 
@@ -76,9 +81,15 @@
 <input type="file" id="fImg" accept="image/*" hidden>
 
 <dialog id="dlg">
-  <p>PDFを書き出します</p>
-  <button id="bExpWith">枠外領域を含めて書き出す</button>
-  <button id="bExpWithout">枠外領域を含めずに書き出す</button>
+  <div id="expChoose">
+    <p id="expMsg">PDFを書き出します</p>
+    <button id="bExpWith">枠外領域を含めて書き出す</button>
+    <button id="bExpWithout">枠外領域を含めずに書き出す</button>
+  </div>
+  <div id="expReady" hidden>
+    <p>PDFができました。「ファイルに保存」などを選んでください</p>
+    <button id="bExpShare">保存・共有</button>
+  </div>
   <button id="bExpCancel" class="sub">キャンセル</button>
 </dialog>
 

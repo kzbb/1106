@@ -26,29 +26,50 @@ let sheets = [], view = { tx: 0, ty: 0, z: 1 }, base = { s: 1, w: 0, h: 0 };
 let undo = [], redo = [], sel = null, renderedZ = 1;
 
 /* ---------- IndexedDB ---------- */
-const dbp = new Promise((res, rej) => {
-  const r = indexedDB.open('daihon-note', 1);
-  r.onupgradeneeded = () => r.result.createObjectStore('kv');
-  r.onsuccess = () => res(r.result);
-  r.onerror = () => rej(r.error);
-});
-async function idbGet(k) {
-  const d = await dbp;
-  return new Promise((res, rej) => {
-    const r = d.transaction('kv').objectStore('kv').get(k);
-    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-  });
+// iPadではバックグラウンドから戻ったときにDBへの接続が切れることがあるため、
+// 接続は使い回しつつ、切れたら開き直す。
+let dbp = null;
+function openDb() {
+  if (!dbp) {
+    dbp = new Promise((res, rej) => {
+      const r = indexedDB.open('daihon-note', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => {
+        const d = r.result;
+        d.onclose = () => { if (dbp === p) dbp = null; };           // OSに接続を切られた
+        d.onversionchange = () => { d.close(); if (dbp === p) dbp = null; };
+        res(d);
+      };
+      r.onerror = () => rej(r.error);
+    });
+    const p = dbp;
+    p.catch(() => { if (dbp === p) dbp = null; });
+  }
+  return dbp;
 }
-async function idbSet(k, v) {
-  const d = await dbp;
-  return new Promise((res, rej) => {
-    const tx = d.transaction('kv', 'readwrite');
-    tx.objectStore('kv').put(v, k);
-    tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
-  });
+async function idbRun(mode, fn) {
+  for (let i = 0; ; i++) {
+    const p = openDb();
+    try {
+      const d = await p;
+      return await new Promise((res, rej) => {
+        const tx = d.transaction('kv', mode);
+        const r = fn(tx.objectStore('kv'));
+        tx.oncomplete = () => res(r.result);
+        tx.onerror = tx.onabort = () => rej(tx.error || new Error('IndexedDB transaction aborted'));
+      });
+    } catch (e) {
+      if (i) throw e;
+      console.warn('IndexedDB: 接続を開き直して再試行します', e);
+      if (dbp === p) dbp = null;
+      p.then(d => d.close(), () => {});
+    }
+  }
 }
+const idbGet = k => idbRun('readonly', s => s.get(k));
+const idbSet = (k, v) => idbRun('readwrite', s => s.put(v, k));
 
-let saveTimer = 0, assetsDirty = false;
+let saveTimer = 0, assetsDirty = false, saveAlerted = false;
 function touch() {
   $('status').textContent = '未保存';
   clearTimeout(saveTimer);
@@ -57,13 +78,23 @@ function touch() {
 async function save() {
   clearTimeout(saveTimer);
   if (!pdf) return;
+  const withAssets = assetsDirty;
+  assetsDirty = false;
   try {
     await idbSet('state', S);
-    if (assetsDirty) { assetsDirty = false; await idbSet('assets', assets); }
+    if (withAssets) await idbSet('assets', assets);
     $('status').textContent = '保存済み';
+    $('status').classList.remove('err');
+    saveAlerted = false;
   } catch (e) {
     console.error(e);
+    if (withAssets) assetsDirty = true;          // 画像は次の保存で書き直す
     $('status').textContent = '保存失敗';
+    $('status').classList.add('err');
+    if (!saveAlerted && !document.hidden) {       // 失敗が続いている間は1回だけ知らせる
+      saveAlerted = true;
+      alert('作業内容を端末に保存できませんでした。\n念のため「書き出し」でPDFを保存し、アプリを再起動してください。\n(' + e.message + ')');
+    }
   }
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
@@ -73,9 +104,11 @@ addEventListener('pagehide', save);
 async function openPdf(buf, name, restored) {
   const doc = await pdfjsLib.getDocument({
     data: new Uint8Array(buf.slice(0)),
-    // ワーカー側から読まれるため、相対パスではなく絶対URLで渡す
     cMapUrl: new URL('vendor/pdfjs/cmaps/', location.href).href, cMapPacked: true,
     standardFontDataUrl: new URL('vendor/pdfjs/standard_fonts/', location.href).href,
+    // cMapとフォントはワーカーではなくページ側で読む。ページの通信は確実にService Worker
+    // を通るため、オフラインでも端末に保存済みのファイルが使われる
+    useWorkerFetch: false,
   }).promise;
   pdf = doc; pdfBytes = buf; sizes = []; undo = []; redo = []; sel = null;
   if (!restored) {
@@ -616,21 +649,63 @@ async function buildPdf(withMargins) {
   }
   return out.save();
 }
+// ホーム画面から起動したiPadでは<a download>が動かないことがあるため、共有シート（「ファイルに保存」など）を使う。
+// ブラウザで開いているときは従来どおりダウンロードする。
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+function shareFiles() {
+  try {
+    return standalone && typeof navigator.canShare === 'function'
+      && navigator.canShare({ files: [new File([''], 'a.pdf', { type: 'application/pdf' })] });
+  } catch (e) { return false; }
+}
+let exportFile = null;
+function openExport() {
+  exportFile = null;
+  $('expChoose').hidden = false; $('expReady').hidden = true;
+  $('expMsg').textContent = 'PDFを書き出します';
+  $('bExpWith').disabled = $('bExpWithout').disabled = false;
+  $('dlg').showModal();
+}
+function download(file) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = file.name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
 async function exportPdf(withMargins) {
-  $('dlg').close();
+  const viaShare = shareFiles();
+  if (viaShare) {
+    // 共有シートはボタンを押した直後にしか開けないので、作成後に「保存・共有」をもう一度押してもらう
+    $('expMsg').textContent = 'PDFを作成しています…';
+    $('bExpWith').disabled = $('bExpWithout').disabled = true;
+  } else $('dlg').close();
   $('status').textContent = '書き出し中';
   try {
     const bytes = await buildPdf(withMargins);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
-    a.download = (S.name || 'script').replace(/\.pdf$/i, '') + '_書き込み.pdf';
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    const file = new File([bytes], (S.name || 'script').replace(/\.pdf$/i, '') + '_書き込み.pdf', { type: 'application/pdf' });
+    if (viaShare && navigator.canShare({ files: [file] })) {
+      exportFile = file;
+      $('expChoose').hidden = true; $('expReady').hidden = false;
+    } else {
+      $('dlg').close();
+      download(file);
+    }
     $('status').textContent = '保存済み';
   } catch (e) {
     console.error(e);
+    $('dlg').close();
     $('status').textContent = '';
     alert('書き出しに失敗しました: ' + e.message);
+  }
+}
+async function shareExport() {
+  if (!exportFile) return;
+  try {
+    await navigator.share({ files: [exportFile] });
+    $('dlg').close();
+  } catch (e) {
+    if (e.name !== 'AbortError') alert('保存・共有できませんでした: ' + e.message);   // AbortError は利用者が閉じただけ
   }
 }
 
@@ -661,9 +736,10 @@ function setOpt(fn, relayout) {
 
 $('bOpen').onclick = $('bOpen2').onclick = () => $('fPdf').click();
 $('fPdf').onchange = e => { pickPdf(e.target.files[0]); e.target.value = ''; };
-$('bExport').onclick = () => $('dlg').showModal();
+$('bExport').onclick = openExport;
 $('bExpWith').onclick = () => exportPdf(true);
 $('bExpWithout').onclick = () => exportPdf(false);
+$('bExpShare').onclick = shareExport;
 $('bExpCancel').onclick = () => $('dlg').close();
 $('bMode').onclick = () => setOpt(() => { S.mode = S.mode === 'spread' ? 'single' : 'spread'; }, true);
 $('bDir').onclick = () => setOpt(() => { S.rtl = !S.rtl; }, true);
@@ -718,9 +794,54 @@ addEventListener('resize', () => {
   }, 100);
 });
 
+/* ---------- オフライン対応 (Service Worker) ---------- */
+// アプリ一式を端末に保存し、オフラインでも起動できるようにする。新しい版は自動では切り替えず、
+// 「更新」ボタンを押したときに作業内容を保存してから読み込み直す。
+function setupSW() {
+  const sw = navigator.serviceWorker;
+  if (!sw || !isSecureContext) return;      // HTTPSでない場合は従来どおりオンラインのみで動く
+  let reg = null, hadController = !!sw.controller, reloading = false;
+  const net = $('net');
+  const showUpdate = () => { $('bUpdate').hidden = false; };
+  const watch = w => w && w.addEventListener('statechange', () => {
+    if (w.state === 'installed' && sw.controller) showUpdate();
+    if (w.state === 'redundant' && !sw.controller) net.textContent = '';   // 取り込み失敗。次回の起動で再試行
+  });
+
+  if (!sw.controller) net.textContent = 'オフライン準備中';
+  sw.ready.then(() => { net.textContent = 'オフライン可'; });
+
+  sw.register('sw.js').then(r => {
+    reg = r;
+    if (r.waiting && sw.controller) showUpdate();
+    watch(r.installing);
+    r.addEventListener('updatefound', () => watch(r.installing));
+  }).catch(e => { console.error(e); net.textContent = ''; });
+
+  // ホーム画面のアプリは切り替えて戻っても再読み込みされないので、表に出るたびに更新を確認する
+  const check = () => { if (reg && navigator.onLine) reg.update().catch(() => {}); };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+  addEventListener('online', check);
+
+  $('bUpdate').onclick = async () => {
+    const w = reg && reg.waiting;
+    if (!w) { $('bUpdate').hidden = true; return; }
+    $('bUpdate').disabled = true;
+    await save();
+    w.postMessage('SKIP_WAITING');
+  };
+  sw.addEventListener('controllerchange', async () => {
+    if (!hadController) { hadController = true; return; }   // 初回の取り込み完了。読み込み直す必要はない
+    if (reloading) return;
+    reloading = true;
+    await save();                                            // 別のタブで更新された場合もここで保存してから切り替わる
+    location.reload();
+  });
+}
+
 /* ---------- 起動: 前回の続きを復元 ---------- */
 (async function init() {
-  sizeOverlay(); syncUI();
+  sizeOverlay(); syncUI(); setupSW();
   try {
     const [st, buf, as] = await Promise.all([idbGet('state'), idbGet('pdf'), idbGet('assets')]);
     if (st && buf) {
