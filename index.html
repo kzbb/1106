@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="台本ノート">
+<title>台本ノート</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="bar">
+  <div class="grp">
+    <button id="bOpen">開く</button>
+    <button id="bExport">書き出し</button>
+  </div>
+  <div class="grp">
+    <button id="bMode" title="1ページ表示と見開き表示の切り替え"></button>
+    <button id="bDir" title="ページ送りの方向"></button>
+    <button id="bCover" title="見開きで1ページ目を単独にする">表紙単独</button>
+    <button id="bMargin" title="枠外領域の表示">枠外</button>
+    <select id="sMargin" title="枠外領域の高さ">
+      <option value="0.1">枠外 小</option>
+      <option value="0.2">枠外 中</option>
+      <option value="0.35">枠外 大</option>
+    </select>
+    <button id="bFit" title="ズームを戻す">全体</button>
+  </div>
+  <div class="grp">
+    <button data-tool="pen">ペン</button>
+    <button data-tool="marker">マーカー</button>
+    <button data-tool="eraser">消しゴム</button>
+    <button data-tool="select">画像選択</button>
+  </div>
+  <div class="grp">
+    <button class="col" data-color="#111111" style="--c:#111111" aria-label="黒"></button>
+    <button class="col" data-color="#d00000" style="--c:#d00000" aria-label="赤"></button>
+    <button class="col" data-color="#0050d0" style="--c:#0050d0" aria-label="青"></button>
+    <button class="col" data-color="#008a3c" style="--c:#008a3c" aria-label="緑"></button>
+    <button class="col" data-color="#f5c400" style="--c:#f5c400" aria-label="黄"></button>
+    <button data-width="s">細</button>
+    <button data-width="m">中</button>
+    <button data-width="l">太</button>
+  </div>
+  <div class="grp">
+    <button id="bUndo">戻す</button>
+    <button id="bRedo">やり直す</button>
+  </div>
+  <div class="grp">
+    <button id="bImage">画像</button>
+    <button id="bPaste">貼り付け</button>
+    <button id="bDelete">画像を削除</button>
+  </div>
+  <div class="grp">
+    <button id="bFinger" title="指でも描く（オフのとき指は移動とページ送り）">指で描く</button>
+  </div>
+  <div class="grp nav">
+    <button id="bLeft">◀</button>
+    <button id="bPage" title="ページ番号を指定して移動">-</button>
+    <button id="bRight">▶</button>
+    <span id="status"></span>
+  </div>
+</div>
+
+<div id="stage">
+  <div id="world"></div>
+  <canvas id="overlay"></canvas>
+  <div id="empty">
+    <p>台本のPDFを開いてください</p>
+    <button id="bOpen2">PDFを開く</button>
+  </div>
+</div>
+
+<input type="file" id="fPdf" accept="application/pdf,.pdf" hidden>
+<input type="file" id="fImg" accept="image/*" hidden>
+
+<dialog id="dlg">
+  <p>PDFを書き出します</p>
+  <button id="bExpWith">枠外領域を含めて書き出す</button>
+  <button id="bExpWithout">枠外領域を含めずに書き出す</button>
+  <button id="bExpCancel" class="sub">キャンセル</button>
+</dialog>
+
+<script src="vendor/pdfjs/pdf.min.js"></script>
+<script src="vendor/pdf-lib.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
