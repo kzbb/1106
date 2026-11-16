@@ -14,24 +14,10 @@
 </head>
 <body>
 <div id="bar">
-  <!-- PDF -->
+  <!-- メニューと、開いているPDFの切り替え -->
   <div class="grp">
-    <button id="bOpen" title="PDFを追加して開く（開いているPDFはそのまま残ります）">開く</button>
+    <button id="bMenu" title="PDFを開く・閉じる・書き出し、表示の設定、指で描く、作業データの読み込み">メニュー</button>
     <select id="sDoc" title="開いているPDFの切り替え" hidden></select>
-    <button id="bClose" title="表示中のPDFを閉じる（書き込みも削除されます）">閉じる</button>
-    <button id="bExport" title="表示中のPDFを書き出す">書き出し</button>
-  </div>
-  <!-- 表示 -->
-  <div class="grp">
-    <button id="bMode" title="1ページ表示と見開き表示の切り替え"></button>
-    <button id="bDir" title="ページ送りの方向"></button>
-    <button id="bCover" title="見開きで1ページ目を単独にする">表紙単独</button>
-    <button id="bMargin" title="枠外領域の表示">枠外</button>
-    <select id="sMargin" title="枠外領域の高さ">
-      <option value="0.1">枠外 小</option>
-      <option value="0.2">枠外 中</option>
-      <option value="0.35">枠外 大</option>
-    </select>
     <button id="bFit" title="ズームを戻す">全体</button>
   </div>
   <!-- 書く道具（選択中のものをもう一度押すと、何も選んでいない状態になる） -->
@@ -76,9 +62,6 @@
     <button id="bUndo">取り消す</button>
     <button id="bRedo">やり直す</button>
   </div>
-  <div class="grp">
-    <button id="bFinger" title="指でも描く（オフのとき指は移動とページ送り）">指で描く</button>
-  </div>
   <!-- ページ送り -->
   <div class="grp nav">
     <button id="bLeft">◀</button>
@@ -87,6 +70,33 @@
     <span id="status"></span>
     <span id="net"></span>
     <button id="bUpdate" hidden title="新しい版に切り替えます（作業内容は保持されます）">更新</button>
+  </div>
+  <!-- メニューの中身。PDFの操作と、たまにしか使わない設定 -->
+  <div id="menu" hidden>
+    <div class="mrow"><span>PDF</span>
+      <button id="bOpen" class="mclose" title="PDFを追加して開く（開いているPDFはそのまま残ります）">開く</button>
+      <button id="bClose" class="mclose" title="表示中のPDFを閉じる（書き込みも削除されます）">閉じる</button>
+      <button id="bExport" class="mclose" title="表示中のPDFを書き出す">書き出し</button>
+    </div>
+    <div class="mrow"><span>表示</span>
+      <button id="bMode" title="1ページ表示と見開き表示の切り替え"></button>
+      <button id="bDir" title="ページ送りの方向"></button>
+      <button id="bCover" title="見開きで1ページ目を単独にする">表紙単独</button>
+    </div>
+    <div class="mrow"><span>枠外</span>
+      <button id="bMargin" title="枠外領域の表示">表示する</button>
+      <select id="sMargin" title="枠外領域の高さ">
+        <option value="0.1">小</option>
+        <option value="0.2">中</option>
+        <option value="0.35">大</option>
+      </select>
+    </div>
+    <div class="mrow"><span>入力</span>
+      <button id="bFinger" title="オフのとき、指は移動とページ送り。Apple Pencil がないときはオンにする">指で描く</button>
+    </div>
+    <div class="mrow"><span>データ</span>
+      <button id="bImport" title="「書き出し」で保存した作業データを、新しいPDFとして読み込む">作業データを読み込む</button>
+    </div>
   </div>
 </div>
 
@@ -109,15 +119,17 @@
 
 <input type="file" id="fPdf" accept="application/pdf,.pdf" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
+<input type="file" id="fData" hidden>
 
 <dialog id="dlg">
   <div id="expChoose">
     <p id="expMsg">PDFを書き出します</p>
     <button id="bExpWith">枠外領域を含めて書き出す</button>
     <button id="bExpWithout">枠外領域を含めずに書き出す</button>
+    <button id="bExpData" title="PDF・書き込み・画像をまとめた控え。メニューの「作業データを読み込む」で続きを編集できる">作業データを書き出す（控え・引き継ぎ用）</button>
   </div>
   <div id="expReady" hidden>
-    <p>PDFができました。「ファイルに保存」などを選んでください</p>
+    <p>ファイルができました。「ファイルに保存」などを選んでください</p>
     <button id="bExpShare">保存・共有</button>
   </div>
   <button id="bExpCancel" class="sub">キャンセル</button>

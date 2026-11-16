@@ -16,12 +16,13 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 // 保存される状態。DOC_KEYS はPDFごと、PREF_KEYS はアプリ全体で1つ
 const DOC_KEYS = ['name', 'cur', 'mode', 'rtl', 'cover', 'margins', 'marginSize', 'annots'];
-const PREF_KEYS = ['tool', 'color', 'colors', 'width', 'fingerDraw', 'shape', 'fillA'];
+const PREF_KEYS = ['tool', 'color', 'colors', 'widths', 'width', 'fingerDraw', 'shape', 'fillA'];
 let S = {
   name: '', cur: 0, mode: 'spread', rtl: true, cover: true,
   margins: true, marginSize: 0.2,
   tool: 'pen', color: '#d00000', width: 'm', fingerDraw: false, shape: 'line', fillA: 0,   // fillA: 図形の塗りの濃さ。0 は塗りなし
   colors: { pen: '#d00000', marker: '#d00000', shape: '#d00000' },   // 道具ごとに覚えている色。color はいま選んでいる道具の色
+  widths: { pen: 'm', marker: 'm', shape: 'm', eraser: 'm' },         // 道具ごとに覚えている太さ（消しゴムは大きさ）。width はいま選んでいる道具の太さ
   annots: {},                // ページ番号 -> 項目の配列（配列の後ろほど手前に描かれる）
 };
 /* 項目の種類:
@@ -207,19 +208,48 @@ function switchDoc(id) {
   });
 }
 
+/* 作業データのファイル（バックアップ）: PDF本体・書き込み・貼り付けた画像を1つにまとめたもの。
+   形式: 目印8バイト + JSONの長さ(4バイト, リトルエンディアン) + JSON {v, name, state, assets} + PDFのバイト列 */
+const BK_MAGIC = [0x44, 0x41, 0x49, 0x48, 0x4f, 0x4e, 0x01, 0x0a];   // "DAIHON" 0x01 "\n"
+function buildBackup() {
+  const json = new TextEncoder().encode(JSON.stringify({ v: 1, name: S.name, state: pick(S, DOC_KEYS), assets }));
+  const len = new Uint8Array(4);
+  new DataView(len.buffer).setUint32(0, json.length, true);
+  return new File([new Uint8Array(BK_MAGIC), len, json, pdfBytes], (S.name || 'script').replace(/\.pdf$/i, '') + '_作業データ.daihon', { type: 'application/octet-stream' });
+}
+// 作業データのファイルでなければ null
+function parseBackup(buf) {
+  const u = new Uint8Array(buf);
+  if (u.length < 12 || !BK_MAGIC.every((v, i) => u[i] === v)) return null;
+  try {
+    const n = new DataView(buf).getUint32(8, true);
+    if (12 + n >= u.length) throw 0;
+    const h = JSON.parse(new TextDecoder().decode(u.subarray(12, 12 + n)));
+    if (!h || typeof h.state !== 'object' || !h.state) throw 0;
+    const st = pick(h.state, DOC_KEYS);
+    if (!st.annots || typeof st.annots !== 'object') st.annots = {};
+    return { name: String(h.name || st.name || ''), state: st, assets: h.assets && typeof h.assets === 'object' ? h.assets : {}, pdf: buf.slice(12 + n) };
+  } catch (e) {
+    throw new Error('作業データのファイルが壊れています');
+  }
+}
+
+// PDF、または作業データのファイルを、新しいPDFとして一覧に加えて表示する（開いているPDFは上書きしない）
 async function addPdf(file) {
   let doc = null;
   try {
-    const buf = await file.arrayBuffer();
+    let buf = await file.arrayBuffer(), name = file.name, as = {};
+    const bk = parseBackup(buf);
+    if (bk) { buf = bk.pdf; name = bk.name || name; as = bk.assets; }
     doc = await loadDoc(buf);               // 保存する前に、開けるPDFかどうかを確かめる
     if (!(await save())) throw new Error('表示中のPDFの書き込みを保存できないため、追加を中止しました');
-    const id = uid(), entry = { id, name: file.name, k: `d:${id}:` };
-    // 綴じ方向などの表示設定は、いま表示中のPDFのものを引き継ぐ
-    const st = { ...pick(S, DOC_KEYS), name: file.name, cur: 0, annots: {} };
+    const id = uid(), entry = { id, name, k: `d:${id}:` };
+    // 綴じ方向などの表示設定は、作業データにあればそれを、なければいま表示中のPDFのものを引き継ぐ
+    const st = bk ? { ...pick(S, DOC_KEYS), ...bk.state, name } : { ...pick(S, DOC_KEYS), name, cur: 0, annots: {} };
     const meta = { ...metaObj(), docs: [...docs, entry].map(d => ({ ...d })), active: id };
     try {                                   // PDF本体と一覧を1つのトランザクションで書く。失敗したら何も変わらない
       await idbRun('readwrite', s => {
-        s.put(buf, entry.k + 'pdf'); s.put(st, entry.k + 'state'); s.put({}, entry.k + 'assets');
+        s.put(buf, entry.k + 'pdf'); s.put(st, entry.k + 'state'); s.put(as, entry.k + 'assets');
         return s.put(meta, 'meta');
       });
     } catch (e) {
@@ -227,7 +257,7 @@ async function addPdf(file) {
     }
     docs = [...docs, entry];
     const d = doc; doc = null;
-    await enterDoc(entry, st, {}, buf, d);
+    await enterDoc(entry, st, as, buf, d);
     $('status').textContent = '保存済み';
   } catch (e) {
     console.error(e);
@@ -1136,7 +1166,7 @@ function openExport() {
   exportFile = null;
   $('expChoose').hidden = false; $('expReady').hidden = true;
   $('expMsg').textContent = 'PDFを書き出します';
-  $('bExpWith').disabled = $('bExpWithout').disabled = false;
+  $('bExpWith').disabled = $('bExpWithout').disabled = $('bExpData').disabled = false;
   $('dlg').showModal();
 }
 function download(file) {
@@ -1146,17 +1176,18 @@ function download(file) {
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
 }
-async function exportPdf(withMargins) {
+// kind: true = 枠外領域つきのPDF、false = 枠外領域なしのPDF、'data' = 作業データ（あとで読み込んで続きを編集できる）
+async function exportPdf(kind) {
   const viaShare = shareFiles();
   if (viaShare) {
     // 共有シートはボタンを押した直後にしか開けないので、作成後に「保存・共有」をもう一度押してもらう
-    $('expMsg').textContent = 'PDFを作成しています…';
-    $('bExpWith').disabled = $('bExpWithout').disabled = true;
+    $('expMsg').textContent = 'ファイルを作成しています…';
+    $('bExpWith').disabled = $('bExpWithout').disabled = $('bExpData').disabled = true;
   } else $('dlg').close();
   $('status').textContent = '書き出し中';
   try {
-    const bytes = await buildPdf(withMargins);
-    const file = new File([bytes], (S.name || 'script').replace(/\.pdf$/i, '') + '_書き込み.pdf', { type: 'application/pdf' });
+    const file = kind === 'data' ? buildBackup()
+      : new File([await buildPdf(kind)], (S.name || 'script').replace(/\.pdf$/i, '') + '_書き込み.pdf', { type: 'application/pdf' });
     if (viaShare && navigator.canShare({ files: [file] })) {
       exportFile = file;
       $('expChoose').hidden = true; $('expReady').hidden = false;
@@ -1229,7 +1260,24 @@ function setOpt(fn, relayout) {
 }
 
 $('bOpen').onclick = $('bOpen2').onclick = () => $('fPdf').click();
-$('fPdf').onchange = e => { pickPdfs(e.target.files); e.target.value = ''; };
+$('fPdf').onchange = $('fData').onchange = e => { pickPdfs(e.target.files); e.target.value = ''; };
+$('bImport').onclick = () => { closeMenu(); $('fData').click(); };
+
+// メニュー（表示の設定など、たまにしか使わないもの）。外側を押すと閉じる
+function closeMenu() { $('menu').hidden = true; $('bMenu').classList.remove('on'); }
+$('bMenu').onclick = () => {
+  const m = $('menu'), b = $('bMenu');
+  if (!m.hidden) return closeMenu();
+  m.hidden = false; b.classList.add('on');
+  m.style.top = b.offsetTop + b.offsetHeight + 6 + 'px';
+  m.style.left = Math.max(8, Math.min(b.offsetLeft, $('bar').clientWidth - m.offsetWidth - 8)) + 'px';
+};
+$('menu').addEventListener('click', e => { if (e.target.closest('.mclose')) closeMenu(); });   // PDFの操作は押したら閉じる
+document.addEventListener('pointerdown', e => {
+  if ($('menu').hidden || e.target.closest('#menu, #bMenu')) return;
+  closeMenu();
+  if (e.target.closest('#stage')) e.stopPropagation();     // 閉じるために押しただけなので、ページには何も描かない
+}, true);
 $('sDoc').onchange = e => { const id = e.target.value; syncUI(); if (id) switchDoc(id); };
 $('bClose').onclick = closeDoc;
 $('sFillA').onchange = e => setOpt(() => { S.fillA = +e.target.value; });
@@ -1238,6 +1286,7 @@ $('bBack').onclick = () => reorderSel(false);
 $('bExport').onclick = openExport;
 $('bExpWith').onclick = () => exportPdf(true);
 $('bExpWithout').onclick = () => exportPdf(false);
+$('bExpData').onclick = () => exportPdf('data');
 $('bExpShare').onclick = shareExport;
 $('bExpCancel').onclick = () => $('dlg').close();
 $('bMode').onclick = () => setOpt(() => { S.mode = S.mode === 'spread' ? 'single' : 'spread'; }, true);
@@ -1252,7 +1301,8 @@ document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setOpt((
   const same = b.dataset.tool === S.tool && (!b.dataset.shape || b.dataset.shape === S.shape);
   S.tool = same ? '' : b.dataset.tool;
   if (b.dataset.shape) S.shape = b.dataset.shape;
-  if (S.colors[S.tool]) S.color = S.colors[S.tool];      // その道具で最後に使った色に戻す
+  if (S.colors[S.tool]) S.color = S.colors[S.tool];      // その道具で最後に使った色と太さに戻す
+  if (S.widths[S.tool]) S.width = S.widths[S.tool];
   if (S.tool !== 'select') sel = null;
   drawOverlay();
 }));
@@ -1261,7 +1311,10 @@ document.querySelectorAll('[data-color]').forEach(b => b.onclick = () => setOpt(
   if (S.tool !== 'pen' && S.tool !== 'marker' && S.tool !== 'shape') S.tool = 'pen';
   S.colors[S.tool] = S.color;
 }));
-document.querySelectorAll('[data-width]').forEach(b => b.onclick = () => setOpt(() => { S.width = b.dataset.width; }));
+document.querySelectorAll('[data-width]').forEach(b => b.onclick = () => setOpt(() => {
+  S.width = b.dataset.width;
+  S.widths[S.widths[S.tool] ? S.tool : 'pen'] = S.width;   // 選択・無選択のときはペンの太さとして覚える
+}));
 $('bUndo').onclick = () => stepHistory(undo, redo);
 $('bRedo').onclick = () => stepHistory(redo, undo);
 $('bImage').onclick = () => $('fImg').click();
@@ -1359,6 +1412,8 @@ function setupSW() {
       // 色を道具ごとに覚える前の版の設定: それまで使っていた色を3つの道具すべての色にする
       if (!meta.prefs || !meta.prefs.colors) S.colors = { pen: S.color, marker: S.color, shape: S.color };
       else S.colors = { ...S.colors, ...meta.prefs.colors };
+      if (!meta.prefs || !meta.prefs.widths) S.widths = { pen: S.width, marker: S.width, shape: S.width, eraser: S.width };
+      else S.widths = { ...S.widths, ...meta.prefs.widths };
       if (meta.prefs && meta.prefs.fill === false) S.fillA = 0;   // 塗りのオン・オフが別のボタンだった版の設定
       // 前回表示していたPDFから順に試し、最初に開けたものを表示する
       const first = docs.find(d => d.id === meta.active);
