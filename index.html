@@ -14,10 +14,14 @@
 </head>
 <body>
 <div id="bar">
+  <!-- PDF -->
   <div class="grp">
-    <button id="bOpen">開く</button>
-    <button id="bExport">書き出し</button>
+    <button id="bOpen" title="PDFを追加して開く（開いているPDFはそのまま残ります）">開く</button>
+    <select id="sDoc" title="開いているPDFの切り替え" hidden></select>
+    <button id="bClose" title="表示中のPDFを閉じる（書き込みも削除されます）">閉じる</button>
+    <button id="bExport" title="表示中のPDFを書き出す">書き出し</button>
   </div>
+  <!-- 表示 -->
   <div class="grp">
     <button id="bMode" title="1ページ表示と見開き表示の切り替え"></button>
     <button id="bDir" title="ページ送りの方向"></button>
@@ -30,11 +34,25 @@
     </select>
     <button id="bFit" title="ズームを戻す">全体</button>
   </div>
+  <!-- 書く道具（選択中のものをもう一度押すと、何も選んでいない状態になる） -->
   <div class="grp">
     <button data-tool="pen">ペン</button>
     <button data-tool="marker">マーカー</button>
-    <button data-tool="eraser">消しゴム</button>
-    <button data-tool="select">画像選択</button>
+    <button data-tool="eraser" title="なぞった部分だけ消す。大きさは細・中・太で選ぶ">消しゴム</button>
+  </div>
+  <div class="grp">
+    <button class="shp" data-tool="shape" data-shape="line" title="直線（始点から終点までドラッグ）" aria-label="直線">／</button>
+    <button class="shp" data-tool="shape" data-shape="ellipse" title="円・楕円" aria-label="円・楕円" data-icon="○●">○</button>
+    <button class="shp" data-tool="shape" data-shape="tri" title="三角形" aria-label="三角形" data-icon="△▲">△</button>
+    <button class="shp" data-tool="shape" data-shape="rect" title="四角形" aria-label="四角形" data-icon="□■">□</button>
+    <button class="shp" data-tool="shape" data-shape="star" title="星" aria-label="星" data-icon="☆★">☆</button>
+    <select id="sFillA" title="これから描く図形の塗り。数字は濃さ（小さいほど透けて下の文字が見える）">
+      <option value="0">塗りなし</option>
+      <option value="0.25">塗り 25%</option>
+      <option value="0.5">塗り 50%</option>
+      <option value="0.75">塗り 75%</option>
+      <option value="1">塗り 100%</option>
+    </select>
   </div>
   <div class="grp">
     <button class="col" data-color="#111111" style="--c:#111111" aria-label="黒"></button>
@@ -42,22 +60,26 @@
     <button class="col" data-color="#0050d0" style="--c:#0050d0" aria-label="青"></button>
     <button class="col" data-color="#008a3c" style="--c:#008a3c" aria-label="緑"></button>
     <button class="col" data-color="#f5c400" style="--c:#f5c400" aria-label="黄"></button>
-    <button data-width="s">細</button>
-    <button data-width="m">中</button>
-    <button data-width="l">太</button>
+  </div>
+  <div class="grp">
+    <button data-width="s" title="線の太さ・消しゴムの大きさ">細</button>
+    <button data-width="m" title="線の太さ・消しゴムの大きさ">中</button>
+    <button data-width="l" title="線の太さ・消しゴムの大きさ">太</button>
+  </div>
+  <!-- 画像と、置いたものの選択 -->
+  <div class="grp">
+    <button data-tool="select" title="画像・図形を選んで動かす（右下の丸で大きさを変える）">選択</button>
+    <button id="bImage">画像</button>
+    <button id="bPaste">貼り付け</button>
   </div>
   <div class="grp">
     <button id="bUndo">取り消す</button>
     <button id="bRedo">やり直す</button>
   </div>
   <div class="grp">
-    <button id="bImage">画像</button>
-    <button id="bPaste">貼り付け</button>
-    <button id="bDelete">画像を削除</button>
-  </div>
-  <div class="grp">
     <button id="bFinger" title="指でも描く（オフのとき指は移動とページ送り）">指で描く</button>
   </div>
+  <!-- ページ送り -->
   <div class="grp nav">
     <button id="bLeft">◀</button>
     <button id="bPage" title="ページ番号を指定して移動">-</button>
@@ -71,13 +93,21 @@
 <div id="stage">
   <div id="world"></div>
   <canvas id="overlay"></canvas>
+  <!-- 画像・図形を選んでいる間だけ出る操作 -->
+  <div id="selBar" hidden>
+    <button id="bFront" title="選択したものを、ほかの書き込みより手前に出す">最前面へ</button>
+    <button id="bBack" title="選択したものを、ほかの書き込みより奥へ送る（PDFより奥にはなりません）">最背面へ</button>
+    <button id="bDelete">削除</button>
+  </div>
   <div id="empty">
     <p>台本のPDFを開いてください</p>
     <button id="bOpen2">PDFを開く</button>
   </div>
 </div>
 
-<input type="file" id="fPdf" accept="application/pdf,.pdf" hidden>
+<div id="busy" hidden><span>読み込み中…</span></div>
+
+<input type="file" id="fPdf" accept="application/pdf,.pdf" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
 <dialog id="dlg">
@@ -95,6 +125,7 @@
 
 <script src="vendor/pdfjs/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
+<script src="vendor/clipper.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

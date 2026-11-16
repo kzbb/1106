@@ -5,7 +5,7 @@
    を実行すること（VERSION が変わらないと利用者の端末は更新されない）。 */
 
 // @@BUILD_START
-const VERSION = '8b5c5259f925';
+const VERSION = '5ee1d803e796';
 const FILES = [
   "./",
   "app.js",
@@ -14,6 +14,7 @@ const FILES = [
   "icons/icon-180.png",
   "icons/icon-192.png",
   "icons/icon-512.png",
+  "vendor/clipper.js",
   "vendor/pdf-lib.min.js",
   "vendor/pdfjs/cmaps/78-EUC-H.bcmap",
   "vendor/pdfjs/cmaps/78-EUC-V.bcmap",
