@@ -660,12 +660,16 @@ function pushUndo(page) {
 function stepHistory(from, to) {
   const u = from.pop();
   if (!u) return;
-  to.push({ page: u.page, items: (S.annots[u.page] || []).slice() });
-  S.annots[u.page] = u.items;
+  // 1回の操作が2ページにまたがることがある（画像・図形を隣のページへ動かしたとき）。also がもう一方のページ
+  const all = [u, ...(u.also || [])];
+  const now = all.map(e => ({ page: e.page, items: (S.annots[e.page] || []).slice() }));
+  to.push({ ...now[0], also: now.slice(1) });
+  for (const e of all) S.annots[e.page] = e.items;
   sel = null;
-  const sh = sheets.find(s => s.page === u.page);
-  if (sh) { drawAnn(sh); drawOverlay(); syncUI(); }
-  else { S.cur = u.page; show(); }
+  if (sheets.some(s => s.page === u.page)) {
+    for (const e of all) { const sh = sheets.find(s => s.page === e.page); if (sh) drawAnn(sh); }
+    drawOverlay(); syncUI();
+  } else { S.cur = u.page; show(); }
   touch();
 }
 
@@ -953,6 +957,23 @@ stage.addEventListener('pointermove', e => {
   } else if (g.tool && e.pointerId === g.id) moveTool(e);
 });
 
+// ドラッグ中の画像・図形を別のページへ移す。画面上の位置が変わらないように座標を付け替える
+function moveToSheet(g, nsh) {
+  const osh = g.sh, ro = osh.el.getBoundingClientRect(), rn = nsh.el.getBoundingClientRect(), k = rn.width / nsh.W;
+  const dx = (ro.left - rn.left) / k, dy = (ro.top - rn.top) / k + osh.m - nsh.m;
+  const it = g.it, top = undo[undo.length - 1];
+  if (top.page !== nsh.page && !(top.also || []).some(e => e.page === nsh.page)) {   // 移る先のページも同じ1回の取り消しで戻す
+    (top.also = top.also || []).push({ page: nsh.page, items: (S.annots[nsh.page] || []).slice() });
+  }
+  S.annots[osh.page] = S.annots[osh.page].filter(a => a !== it);
+  S.annots[nsh.page] = [...(S.annots[nsh.page] || []), it];
+  const o = g.o;
+  if (it.t === 'g') { o.x0 += dx; o.x1 += dx; o.y0 += dy; o.y1 += dy; } else { o.x += dx; o.y += dy; }
+  g.x0 += dx; g.y0 += dy;
+  g.sh = nsh; g.k = k; g.r = rn;
+  sel = { page: nsh.page, id: it.id };
+  drawAnn(osh);
+}
 function moveTool(e) {
   if (g.stroke && g.stroke.t === 'g') {
     const [x, y] = pt(g, e);
@@ -970,12 +991,17 @@ function moveTool(e) {
     const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
     for (const ev of evs.length ? evs : [e]) { const [x, y] = pt(g, ev); eraseTo(g, x, y); }
   } else if (g.it) {
-    const [x, y] = pt(g, e), page = g.sh.page;
+    let [x, y] = pt(g, e);
     if (!g.pushed) {                           // 動かし始めたときに履歴へ積み、複製を動かす
       if (Math.hypot(x - g.x0, y - g.y0) * g.k < 3) return;
+      const page = g.sh.page;
       pushUndo(page); g.pushed = true;
       const arr = S.annots[page], c = { ...g.it };
       arr[arr.indexOf(g.it)] = c; g.it = c;
+    }
+    if (g.mode === 'move') {                   // 見開きの隣のページの上まで動かしたら、そのページへ移す
+      const h = locate(e);
+      if (h && h.sh !== g.sh) { moveToSheet(g, h.sh); [x, y] = pt(g, e); }
     }
     const it = g.it, o = g.o;
     const dx = x - g.x0, dy = y - g.y0;
