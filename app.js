@@ -1221,7 +1221,7 @@ function syncUI() {
   on($('bCover'), S.cover); $('bCover').disabled = S.mode !== 'spread';
   on($('bMargin'), S.margins);
   $('sMargin').value = String(S.marginSize);
-  on($('bFinger'), S.fingerDraw);
+  on($('bFinger'), !S.fingerDraw);          // 画面の表記は「Pencilを使う」。オンのとき指は描かない（fingerDraw の逆）
   document.querySelectorAll('[data-tool]').forEach(b => on(b, b.dataset.tool === S.tool && (!b.dataset.shape || b.dataset.shape === S.shape)));
   document.querySelectorAll('[data-color]').forEach(b => on(b, b.dataset.color === S.color));
   document.querySelectorAll('[data-width]').forEach(b => on(b, b.dataset.width === S.width));
