@@ -16,22 +16,31 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 
 // 保存される状態。DOC_KEYS はPDFごと、PREF_KEYS はアプリ全体で1つ
 const DOC_KEYS = ['name', 'cur', 'mode', 'rtl', 'cover', 'margins', 'marginSize', 'annots'];
-const PREF_KEYS = ['tool', 'color', 'colors', 'widths', 'width', 'fingerDraw', 'shape', 'fillA'];
+const PREF_KEYS = ['tool', 'color', 'colors', 'widths', 'width', 'fingerDraw', 'shape', 'fillA', 'arrow', 'selMode'];
 let S = {
   name: '', cur: 0, mode: 'spread', rtl: true, cover: true,
   margins: true, marginSize: 0.2,
   tool: 'pen', color: '#d00000', width: 'm', fingerDraw: false, shape: 'line', fillA: 0,   // fillA: 図形の塗りの濃さ。0 は塗りなし
+  arrow: 0,                  // これから描く直線の矢印（項目の ar と同じ値）
+  selMode: 'rect',           // 選択の道具で何もないところをなぞったとき: rect = 長方形で囲む、lasso = 投げ縄
   colors: { pen: '#d00000', marker: '#d00000', shape: '#d00000' },   // 道具ごとに覚えている色。color はいま選んでいる道具の色
   widths: { pen: 'm', marker: 'm', shape: 'm', eraser: 'm' },         // 道具ごとに覚えている太さ（消しゴムは大きさ）。width はいま選んでいる道具の太さ
   annots: {},                // ページ番号 -> 項目の配列（配列の後ろほど手前に描かれる）
 };
 /* 項目の種類:
-   {t:'s', c, w, a, p:[x,y,...]}        手書きの線。点列を二次ベジェでなめらかに結ぶ
+   {t:'s', id, c, w, a, p:[x,y,...]}    手書きの線。点列を二次ベジェでなめらかに結ぶ。a は不透明度
    {t:'s', ..., l:1}                    折れ線（点列を直線で結ぶ）。消しゴムで切り分けた残りはこの形になる
    {t:'g', id, k, c, w, x0, y0, x1, y1} 図形。k = line | ellipse | tri | rect | star。(x0,y0)→(x1,y1) はドラッグした範囲
    {t:'g', ..., f}                      塗りつぶした図形。f は濃さ（不透明度 0〜1）。輪郭線は引かず、面全体を1色で塗る
-   {t:'f', c, f, r:[[x,y,...],...]}     塗った面。塗りつぶした図形を消しゴムで削った残り。r は外周と穴の輪の並び
-   {t:'i', id, a, x, y, w, h}           画像。a は assets のID */
+   {t:'g', ..., rot}                    回転した図形。rot はラジアン（時計回り）で、範囲の中心まわりに回す。直線には使わない
+   {t:'g', ..., a}                      輪郭線の不透明度（なければ1）
+   {t:'g', k:'line', ..., ar}           矢印つきの直線。ar = 1 終点に矢印 / 2 両端 / 3 始点に矢印
+   {t:'f', id, c, f, r:[[x,y,...],...]} 塗った面。塗りつぶした図形を消しゴムで削った残り。r は外周と穴の輪の並び
+   {t:'i', id, a, x, y, w, h, rot}      画像。a は assets のID。rot は中心まわりの回転（なければ0）
+   {t:'G', id, ch:[...], rot}           グループ。ch は中の項目（重なり順）。中の項目はページの座標のまま持ち、
+                                        グループを動かすと中の項目の座標を直接書き換える。rot は選択枠の向きにだけ使う
+   旧版のデータの線・面には id がないので、読み込んだときに付ける。項目は確定後に書き換えず、変えるときは複製を作る
+   （取り消しの履歴が同じ項目を共有しているため）。 */
 let assets = {};             // 画像ID -> dataURL（表示中のPDFの分だけ）
 let docs = [];               // 開いているPDFの一覧 [{id, name, k}]。k はIndexedDBのキーの接頭辞
 let D = null;                // 表示中のPDF（docs の要素）
@@ -162,6 +171,7 @@ function enterDoc(entry, st, as, buf, doc) {
   D = entry;
   Object.assign(S, pick(st, DOC_KEYS));
   S.annots = st.annots || {};
+  for (const p in S.annots) S.annots[p].forEach(ensureId);
   assets = as || {};
   pdf = doc; pdfBytes = buf;
   const h = hist[entry.id] || (hist[entry.id] = { undo: [], redo: [] });
@@ -484,6 +494,14 @@ function strokePath(ctx, it) {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.strokeStyle = it.c; ctx.lineWidth = it.w; ctx.globalAlpha = it.a || 1;
   ctx.beginPath();
+  if (it.t === 'g' && it.k === 'line' && it.ar) {   // 矢印つきの直線: 線を矢じりの中まで引き、矢じりを塗る
+    const a = arrowGeom(it);
+    ctx.moveTo(a.line[0], a.line[1]); ctx.lineTo(a.line[2], a.line[3]); ctx.stroke();
+    ctx.fillStyle = it.c;
+    for (const h of a.heads) { ctx.beginPath(); ctx.moveTo(h[0], h[1]); ctx.lineTo(h[2], h[3]); ctx.lineTo(h[4], h[5]); ctx.closePath(); ctx.fill(); }
+    ctx.restore();
+    return;
+  }
   if (it.t === 'g') {
     shapeTrace(ctx, it);
     // 塗りつぶした図形は面だけを塗る。輪郭線を重ねると、半透明のとき縁だけ濃くなって色がそろわない
@@ -514,23 +532,48 @@ const STAR_UV = (() => {
   return o.map(q => [(q[0] - x0) / w, (q[1] - y0) / h]);
 })();
 const SHAPE_UV = { tri: [[0.5, 0], [1, 1], [0, 1]], rect: [[0, 0], [1, 0], [1, 1], [0, 1]], star: STAR_UV };
-// 楕円以外の図形の頂点 [x,y,...]。直線は2点、ほかは閉じた多角形
+// (x,y) を (cx,cy) のまわりに a ラジアン回す（画面では時計回り）
+const rotP = (x, y, cx, cy, a) => {
+  const c = Math.cos(a), s = Math.sin(a), dx = x - cx, dy = y - cy;
+  return [cx + dx * c - dy * s, cy + dx * s + dy * c];
+};
+// 画像と、直線以外の図形の中心（回転の中心）
+const centerOf = it => it.t === 'i' ? [it.x + it.w / 2, it.y + it.h / 2] : [(it.x0 + it.x1) / 2, (it.y0 + it.y1) / 2];
+// 楕円以外の図形の頂点 [x,y,...]。直線は2点、ほかは閉じた多角形（回転を反映したもの）
 function shapePts(it) {
   if (it.k === 'line') return [it.x0, it.y0, it.x1, it.y1];
-  const o = [];
-  for (const [u, v] of SHAPE_UV[it.k] || SHAPE_UV.rect) o.push(r2(it.x0 + u * (it.x1 - it.x0)), r2(it.y0 + v * (it.y1 - it.y0)));
+  const o = [], a = it.rot || 0, [cx, cy] = centerOf(it);
+  for (const [u, v] of SHAPE_UV[it.k] || SHAPE_UV.rect) {
+    let x = it.x0 + u * (it.x1 - it.x0), y = it.y0 + v * (it.y1 - it.y0);
+    if (a) [x, y] = rotP(x, y, cx, cy, a);
+    o.push(r2(x), r2(y));
+  }
   return o;
 }
 const filled = it => it.t === 'g' && !!it.f && it.k !== 'line';
-// 選択枠に使う外接長方形
-const frameOf = it => it.t === 'g'
-  ? { x: Math.min(it.x0, it.x1), y: Math.min(it.y0, it.y1), w: Math.abs(it.x1 - it.x0), h: Math.abs(it.y1 - it.y0) }
-  : { x: it.x, y: it.y, w: it.w, h: it.h };
+const isLine = it => it.t === 'g' && it.k === 'line';
+const isMarker = it => it.t === 's' && it.w > 3.3;     // マーカーの線は WIDTHS の6倍（4.8以上）、ペンは3.2以下
+/* 直線の矢じり。ar = 1 終点 / 2 両端 / 3 始点。矢じりは塗った三角形で、大きさは線の太さに応じる。
+   線は矢じりの内側まで引く（先端の丸い端が矢じりからはみ出さないよう、先端から長さの7割だけ短くする） */
+function arrowGeom(it) {
+  let x0 = it.x0, y0 = it.y0, x1 = it.x1, y1 = it.y1;
+  const ar = it.ar | 0, L = Math.hypot(x1 - x0, y1 - y0);
+  if (!ar || L < 1e-6) return { line: [x0, y0, x1, y1], heads: [] };
+  const len = Math.min(5 + it.w * 3, L * (ar === 2 ? 0.45 : 0.9)), hw = len * 0.45;
+  const ux = (x1 - x0) / L, uy = (y1 - y0) / L, heads = [];
+  const head = (tx, ty, dx, dy) => {
+    const bx = tx - dx * len, by = ty - dy * len;
+    return [tx, ty, bx - dy * hw, by + dx * hw, bx + dy * hw, by - dx * hw].map(r2);
+  };
+  if (ar === 1 || ar === 2) { heads.push(head(x1, y1, ux, uy)); x1 -= ux * len * 0.7; y1 -= uy * len * 0.7; }
+  if (ar === 2 || ar === 3) { heads.push(head(x0, y0, -ux, -uy)); x0 += ux * len * 0.7; y0 += uy * len * 0.7; }
+  return { line: [x0, y0, x1, y1].map(r2), heads };
+}
 const ellipseOf = it => ({ cx: (it.x0 + it.x1) / 2, cy: (it.y0 + it.y1) / 2, rx: Math.abs(it.x1 - it.x0) / 2, ry: Math.abs(it.y1 - it.y0) / 2 });
 function shapeTrace(ctx, it) {
   if (it.k === 'ellipse') {
     const e = ellipseOf(it);
-    ctx.ellipse(e.cx, e.cy, e.rx, e.ry, 0, 0, Math.PI * 2);
+    ctx.ellipse(e.cx, e.cy, e.rx, e.ry, it.rot || 0, 0, Math.PI * 2);
     ctx.closePath();
     return;
   }
@@ -546,14 +589,15 @@ function svgPath(it) {
     return it.r.map(q => { let d = `M ${q[0]} ${q[1]}`; for (let i = 2; i < q.length; i += 2) d += ` L ${q[i]} ${q[i + 1]}`; return d + ' Z'; }).join(' ');
   }
   if (it.t === 'g') {
-    if (it.k === 'ellipse') {
-      const { cx, cy, rx, ry } = ellipseOf(it), kx = rx * 0.5522847498, ky = ry * 0.5522847498;
-      return `M ${f(cx + rx)} ${f(cy)} C ${f(cx + rx)} ${f(cy + ky)} ${f(cx + kx)} ${f(cy + ry)} ${f(cx)} ${f(cy + ry)}`
-        + ` C ${f(cx - kx)} ${f(cy + ry)} ${f(cx - rx)} ${f(cy + ky)} ${f(cx - rx)} ${f(cy)}`
-        + ` C ${f(cx - rx)} ${f(cy - ky)} ${f(cx - kx)} ${f(cy - ry)} ${f(cx)} ${f(cy - ry)}`
-        + ` C ${f(cx + kx)} ${f(cy - ry)} ${f(cx + rx)} ${f(cy - ky)} ${f(cx + rx)} ${f(cy)} Z`;
+    if (it.k === 'ellipse') {             // 4本の三次ベジェで近似し、回転していれば制御点ごと回す
+      const { cx, cy, rx, ry } = ellipseOf(it), kx = rx * 0.5522847498, ky = ry * 0.5522847498, a = it.rot || 0;
+      const P = (x, y) => { const p = a ? rotP(x, y, cx, cy, a) : [x, y]; return `${f(p[0])} ${f(p[1])}`; };
+      return `M ${P(cx + rx, cy)} C ${P(cx + rx, cy + ky)} ${P(cx + kx, cy + ry)} ${P(cx, cy + ry)}`
+        + ` C ${P(cx - kx, cy + ry)} ${P(cx - rx, cy + ky)} ${P(cx - rx, cy)}`
+        + ` C ${P(cx - rx, cy - ky)} ${P(cx - kx, cy - ry)} ${P(cx, cy - ry)}`
+        + ` C ${P(cx + kx, cy - ry)} ${P(cx + rx, cy - ky)} ${P(cx + rx, cy)} Z`;
     }
-    const q = shapePts(it);
+    const q = it.k === 'line' && it.ar ? arrowGeom(it).line : shapePts(it);
     let d = `M ${q[0]} ${q[1]}`;
     for (let i = 2; i < q.length; i += 2) d += ` L ${q[i]} ${q[i + 1]}`;
     return it.k === 'line' ? d : d + ' Z';
@@ -588,13 +632,20 @@ function drawAnn(sh) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, sh.ann.width, sh.ann.height);
   annCtx(sh);
-  for (const it of S.annots[sh.page] || []) {
-    if (it.t !== 'i') strokePath(ctx, it);
-    else {
-      const img = getImg(it.a, () => { if (sheets.includes(sh)) drawAnn(sh); });
-      if (img) ctx.drawImage(img, it.x, it.y, it.w, it.h);
-    }
-  }
+  const again = () => { if (sheets.includes(sh)) drawAnn(sh); };   // 画像の読み込みが終わったら描き直す
+  for (const it of S.annots[sh.page] || []) drawItem(ctx, it, again);
+}
+function drawItem(ctx, it, again) {
+  if (it.t === 'G') { for (const c of it.ch) drawItem(ctx, c, again); return; }
+  if (it.t !== 'i') { strokePath(ctx, it); return; }
+  const img = getImg(it.a, again);
+  if (!img) return;
+  if (!it.rot) { ctx.drawImage(img, it.x, it.y, it.w, it.h); return; }
+  const [cx, cy] = centerOf(it);
+  ctx.save();
+  ctx.translate(cx, cy); ctx.rotate(it.rot);
+  ctx.drawImage(img, -it.w / 2, -it.h / 2, it.w, it.h);
+  ctx.restore();
 }
 
 function sheetXform(sh) {
@@ -631,23 +682,47 @@ function drawOverlay() {
     ctx.fillStyle = '#ffffff66'; ctx.fill();
     ctx.strokeStyle = '#333'; ctx.lineWidth = 1; ctx.stroke();
   }
-  const it = selItem();
-  if (it) {                                  // 選択中の画像・図形の枠とリサイズ用の取っ手
-    const sh = sheets.find(s => s.page === sel.page);
-    const t = sheetXform(sh);
+  if (g && g.mode === 'region' && g.pts.length >= 4) {   // なぞっている途中の選択範囲
+    const t = sheetXform(g.sh), q = regionPoly(g);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const f = frameOf(it);
-    const x = t.ox + f.x * t.k, y = t.oy + f.y * t.k, w = f.w * t.k, h = f.h * t.k;
-    ctx.strokeStyle = '#0a66d8'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
-    ctx.strokeRect(x, y, w, h);
-    ctx.setLineDash([]);
-    ctx.fillStyle = '#0a66d8';
-    ctx.beginPath(); ctx.arc(x + w, y + h, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    for (let i = 0; i < q.length; i += 2) ctx.lineTo(t.ox + q[i] * t.k, t.oy + q[i + 1] * t.k);
+    ctx.closePath();
+    ctx.fillStyle = '#0a66d81a'; ctx.fill();
+    ctx.strokeStyle = '#0a66d8'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
   }
-}
-function selItem() {
-  if (!sel || !sheets.some(s => s.page === sel.page)) return null;
-  return (S.annots[sel.page] || []).find(i => i.id === sel.id) || null;
+  const sg = selGeom();
+  const bar = $('selBar');
+  if (!sg) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.strokeStyle = '#0a66d8'; ctx.fillStyle = '#0a66d8'; ctx.lineWidth = 2;
+  const dot = (p, r) => { ctx.beginPath(); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); ctx.fill(); };
+  if (sg.ends) {                             // 直線1本: 両端の取っ手で向きと長さを変える
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(...sg.ends[0]); ctx.lineTo(...sg.ends[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    sg.ends.forEach(p => dot(p, 9));
+  } else {
+    if (sg.items.length > 1) {               // 複数のときは、どれが選ばれているかを薄い枠で示す
+      ctx.strokeStyle = '#0a66d880'; ctx.lineWidth = 1;
+      for (const it of sg.items) {
+        const b = bboxAll(it);
+        ctx.strokeRect(sg.t.ox + b[0] * sg.t.k, sg.t.oy + b[1] * sg.t.k, (b[2] - b[0]) * sg.t.k, (b[3] - b[1]) * sg.t.k);
+      }
+      ctx.strokeStyle = '#0a66d8'; ctx.lineWidth = 2;
+    }
+    ctx.setLineDash(sg.group ? [2, 3] : [6, 4]);
+    ctx.beginPath(); sg.corners.forEach(p => ctx.lineTo(p[0], p[1])); ctx.closePath(); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(...sg.topMid); ctx.lineTo(...sg.rot); ctx.stroke();
+    dot(sg.corners[2], 9);                   // 右下: 大きさ
+    dot(sg.rot, 9);                          // 上: 回転
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(sg.rot[0], sg.rot[1], 4.5, -Math.PI * 0.9, Math.PI * 0.5); ctx.stroke();
+  }
+  // 選択したものが画面の下のほうにあるときは、操作の帯を上に出して隠さないようにする
+  const ys = sg.ends ? sg.ends.map(p => p[1]) : sg.corners.map(p => p[1]);
+  bar.classList.toggle('top', Math.max(...ys) > stageH - bar.offsetHeight - 30 && Math.min(...ys) > bar.offsetHeight + 30);
 }
 
 /* ---------- 取り消し ---------- */
@@ -717,34 +792,21 @@ stage.addEventListener('pointerdown', e => {
 });
 
 function startTool(e, isTouch) {
+  if (S.tool === 'select') return startSelect(e, isTouch);
   const h = locate(e);
-  if (!h) {
-    if (S.tool === 'select' && sel) { sel = null; syncUI(); drawOverlay(); }
-    return;
-  }
+  if (!h) return;
   g = { tool: S.tool, id: e.pointerId, touch: isTouch, sh: h.sh, k: h.k, r: h.r };
   if (S.tool === 'pen' || S.tool === 'marker') {
     const mk = S.tool === 'marker';
-    g.stroke = { t: 's', c: S.color, w: WIDTHS[S.width] * (mk ? 6 : 1), a: mk ? 0.35 : 1, p: [r2(h.x), r2(h.y)] };
+    g.stroke = { t: 's', id: uid(), c: S.color, w: WIDTHS[S.width] * (mk ? 6 : 1), a: mk ? 0.35 : 1, p: [r2(h.x), r2(h.y)] };
     queueOverlay();
   } else if (S.tool === 'shape') {
     const x = r2(h.x), y = r2(h.y);
     g.stroke = { t: 'g', id: uid(), k: S.shape, c: S.color, w: WIDTHS[S.width], x0: x, y0: y, x1: x, y1: y };
     if (S.fillA && S.shape !== 'line') g.stroke.f = S.fillA;
+    if (S.arrow && S.shape === 'line') g.stroke.ar = S.arrow;
   } else if (S.tool === 'eraser') {
     eraseTo(g, h.x, h.y);
-  } else {
-    const arr = S.annots[h.sh.page] || [];
-    const cur = sel && sel.page === h.sh.page && arr.find(i => i.id === sel.id);
-    let it = null, mode = 'move';
-    const f = cur && frameOf(cur);
-    if (f && Math.hypot(h.x - (f.x + f.w), h.y - (f.y + f.h)) < 24 / h.k) { it = cur; mode = 'resize'; }
-    else for (let i = arr.length - 1; i >= 0; i--) {         // 手前にあるものから探す
-      if (hitItem(arr[i], h.x, h.y, 12 / h.k)) { it = arr[i]; break; }
-    }
-    if (!it) { sel = null; g = null; }
-    else { if (!it.id) it.id = uid(); sel = { page: h.sh.page, id: it.id }; Object.assign(g, { mode, it, x0: h.x, y0: h.y, o: { ...it } }); }
-    syncUI(); drawOverlay();
   }
 }
 
@@ -759,10 +821,13 @@ function flatten(it) {
   if (o) return o;
   if (it.t === 'g') {
     if (it.k === 'ellipse') {
-      const { cx, cy, rx, ry } = ellipseOf(it), r = Math.max(rx, ry, 0.01);
+      const { cx, cy, rx, ry } = ellipseOf(it), r = Math.max(rx, ry, 0.01), rot = it.rot || 0;
       const n = clamp(Math.ceil(Math.PI / Math.acos(Math.max(0, 1 - FLAT_TOL / r))), 16, 720);
       o = [];
-      for (let i = 0; i < n; i++) { const a = 2 * Math.PI * i / n; o.push(cx + rx * Math.cos(a), cy + ry * Math.sin(a)); }
+      for (let i = 0; i < n; i++) {
+        const a = 2 * Math.PI * i / n;
+        o.push(...rotP(cx + rx * Math.cos(a), cy + ry * Math.sin(a), cx, cy, rot));
+      }
       o.push(o[0], o[1]);
     } else {
       o = shapePts(it);
@@ -791,10 +856,10 @@ function flatten(it) {
 function boxOf(it) {
   let b = boxCache.get(it);
   if (b) return b;
-  if (it.t === 'g') b = [Math.min(it.x0, it.x1), Math.min(it.y0, it.y1), Math.max(it.x0, it.x1), Math.max(it.y0, it.y1)];
+  if (it.t === 'g' && !it.rot) b = [Math.min(it.x0, it.x1), Math.min(it.y0, it.y1), Math.max(it.x0, it.x1), Math.max(it.y0, it.y1)];
   else {
     b = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const p of it.t === 'f' ? it.r : [it.p]) for (let i = 0; i < p.length; i += 2) {
+    for (const p of it.t === 'f' ? it.r : [it.t === 'g' ? flatten(it) : it.p]) for (let i = 0; i < p.length; i += 2) {
       if (p[i] < b[0]) b[0] = p[i]; if (p[i] > b[2]) b[2] = p[i];
       if (p[i + 1] < b[1]) b[1] = p[i + 1]; if (p[i + 1] > b[3]) b[3] = p[i + 1];
     }
@@ -885,7 +950,7 @@ function cutFill(it, ax, ay, bx, by, R) {
     if (Math.abs(ringsArea(sol) - ringsArea(subj)) < 2) return null;         // 面積が変わらない = 触れていない
     sol = C.Clipper.CleanPolygons(sol, 2).filter(p => p.length >= 3 && Math.abs(C.Clipper.Area(p)) > 0.2 * CS * CS);
     if (!sol.length) return [];
-    return [{ t: 'f', c: it.c, f: it.f, r: sol.map(p => { const q = []; for (const v of p) q.push(v.X / CS, v.Y / CS); return q; }) }];
+    return [{ t: 'f', id: uid(), c: it.c, f: it.f, r: sol.map(p => { const q = []; for (const v of p) q.push(v.X / CS, v.Y / CS); return q; }) }];
   } catch (e) {
     console.error(e);
     return null;
@@ -898,12 +963,41 @@ function inPoly(q, x, y) {                   // 閉じた折れ線 q の内側�
   }
   return c;
 }
-// 選択の当たり判定。画像は面、図形は輪郭の近く（塗りつぶした図形は面も）。手書きの線は選択できない
+// タップでの選択の当たり判定。画像と塗った面は面、線と図形は線の近く（塗りつぶした図形は面も）。グループは中のどれかに当たれば当たり
 function hitItem(a, x, y, tol) {
-  if (a.t === 'i') return x >= a.x && x <= a.x + a.w && y >= a.y && y <= a.y + a.h;
-  if (a.t !== 'g') return false;
+  if (a.t === 'G') return a.ch.some(c => hitItem(c, x, y, tol));
+  if (a.t === 'i') {
+    const [cx, cy] = centerOf(a), [u, v] = rotP(x, y, cx, cy, -(a.rot || 0));
+    return u >= a.x && u <= a.x + a.w && v >= a.y && v <= a.y + a.h;
+  }
+  if (a.t === 'f') return a.r.reduce((n, q) => n ^ inPoly(q, x, y), false) === 1;
   const q = flatten(a);
   return (filled(a) && inPoly(q, x, y)) || cutPoly(q, x, y, x, y, tol + a.w / 2) !== null;
+}
+// 消しゴムの通り道にかかった部分を項目の並び arr から消す。変わらなければ null、変われば新しい並びを返す。
+// グループの中の線や図形も消す（中が空になったグループはなくなる）。画像は消しゴムでは消さない
+function eraseList(arr, ax, ay, x, y, rad) {
+  const x0 = Math.min(ax, x), x1 = Math.max(ax, x), y0 = Math.min(ay, y), y1 = Math.max(ay, y);
+  let out = null;
+  for (let i = 0; i < arr.length; i++) {
+    const it = arr[i];
+    let rep = null;                          // この項目と置き換える項目の並び
+    if (it.t === 'G') {
+      const ch = eraseList(it.ch, ax, ay, x, y, rad);
+      if (ch) rep = ch.length ? [{ ...it, ch }] : [];
+    } else if (it.t !== 'i') {
+      const area = it.t === 'f' || filled(it);   // 塗った面は面として削る。線と輪郭は線として切る
+      const R = area ? rad : rad + it.w / 2, b = boxOf(it);
+      if (b[0] <= x1 + R && b[2] >= x0 - R && b[1] <= y1 + R && b[3] >= y0 - R) {
+        const parts = area ? cutFill(it, ax, ay, x, y, R) : cutPoly(flatten(it), ax, ay, x, y, R);
+        if (parts) rep = area ? parts : parts.map(q => ({ t: 's', id: uid(), c: it.c, w: it.w, a: it.a || 1, l: 1, p: q.map(r2) }));
+      }
+    }
+    if (!rep) { if (out) out.push(it); continue; }
+    if (!out) out = arr.slice(0, i);
+    out.push(...rep);
+  }
+  return out;
 }
 // 消しゴムを (x,y) まで動かす。前回の位置からの通り道にかかった部分を消す
 function eraseTo(g, x, y) {
@@ -912,28 +1006,313 @@ function eraseTo(g, x, y) {
   queueOverlay();
   const page = g.sh.page, arr = S.annots[page];
   if (!arr) return;
-  const rad = ERASER_PX[S.width] / g.k;
-  const x0 = Math.min(ax, x), x1 = Math.max(ax, x), y0 = Math.min(ay, y), y1 = Math.max(ay, y);
-  let out = null;
-  for (let i = 0; i < arr.length; i++) {
-    const it = arr[i];
-    let parts = null;
-    const area = it.t === 'f' || filled(it);   // 塗った面は面として削る。線と輪郭は線として切る
-    if (it.t !== 'i') {                      // 画像は消しゴムでは消さない
-      const R = area ? rad : rad + it.w / 2, b = boxOf(it);
-      if (b[0] <= x1 + R && b[2] >= x0 - R && b[1] <= y1 + R && b[3] >= y0 - R) {
-        parts = area ? cutFill(it, ax, ay, x, y, R) : cutPoly(flatten(it), ax, ay, x, y, R);
-      }
-    }
-    if (!parts) { if (out) out.push(it); continue; }
-    if (!out) out = arr.slice(0, i);
-    if (area) out.push(...parts);
-    else for (const q of parts) out.push({ t: 's', c: it.c, w: it.w, a: it.a || 1, l: 1, p: q.map(r2) });
-  }
+  const out = eraseList(arr, ax, ay, x, y, ERASER_PX[S.width] / g.k);
   if (!out) return;
   if (!g.pushed) { pushUndo(page); g.pushed = true; }      // 1回のなぞりを1回の「取り消す」で戻せるようにする
   S.annots[page] = out;
   drawAnn(g.sh); touch();
+}
+
+/* ---------- 選択と変形 ----------
+   選択は1つのページの中の項目の集まり sel = {page, ids, rot}。rot は選択枠の向き（1つだけ選んだときはその項目の回転）。
+   移動・拡大縮小・回転は、1つでも複数でもグループでも xformItem（相似変換）で行う。コピーの位置合わせも同じ関数を使う。
+   変形の途中は、動かし始めたときの項目（g.orig）から毎回計算し直すので、丸めの誤差がたまらない。 */
+const HANDLE_PX = 24;        // 取っ手の当たりの半径（画面上のピクセル）
+const ROT_STEM_PX = 30;      // 回転の取っ手を枠の上辺からどれだけ離すか（画面上のピクセル）
+
+function ensureId(it) {
+  if (!it.id) it.id = uid();
+  if (it.t === 'G') it.ch.forEach(ensureId);
+}
+// 角度を -π〜π にそろえる
+const normA = a => { a = (a + Math.PI) % (2 * Math.PI); if (a < 0) a += 2 * Math.PI; return Math.round((a - Math.PI) * 1e4) / 1e4; };
+// 45度ごとの角度の近く（±3度）では吸い付ける。まっすぐに戻しやすくするため
+const snapA = a => { const st = Math.PI / 4, n = Math.round(a / st); return Math.abs(a - n * st) < 0.052 ? n * st : a; };
+const boxItem = it => it.t === 'i' || (it.t === 'g' && it.k !== 'line');   // 縦横を別々に変えられる項目
+
+function imgCorners(it) {
+  const [cx, cy] = centerOf(it), a = it.rot || 0, o = [];
+  for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) o.push(...rotP(it.x + u * it.w, it.y + v * it.h, cx, cy, a));
+  return o;
+}
+// 項目の形を折れ線の集まりで表す（範囲選択の当たり判定と選択枠の計算に使う）。
+// q は折れ線 [x,y,...]、area は内側も当たりにするか、w は線の太さ
+function outlines(it, out = []) {
+  if (it.t === 'G') for (const c of it.ch) outlines(c, out);
+  else if (it.t === 'i') { const q = imgCorners(it); out.push({ q: [...q, q[0], q[1]], area: true, w: 0 }); }
+  else if (it.t === 'f') for (const r of it.r) out.push({ q: [...r, r[0], r[1]], area: true, w: 0 });
+  else out.push({ q: flatten(it), area: filled(it), w: filled(it) ? 0 : it.w });
+  return out;
+}
+const bbCache = new WeakMap();
+// 線の太さを含めた外接長方形 [x0,y0,x1,y1]
+function bboxAll(it) {
+  let b = bbCache.get(it);
+  if (b) return b;
+  b = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const o of outlines(it)) {
+    const h = o.w / 2, q = o.q;
+    for (let i = 0; i < q.length; i += 2) {
+      if (q[i] - h < b[0]) b[0] = q[i] - h; if (q[i] + h > b[2]) b[2] = q[i] + h;
+      if (q[i + 1] - h < b[1]) b[1] = q[i + 1] - h; if (q[i + 1] + h > b[3]) b[3] = q[i + 1] + h;
+    }
+  }
+  bbCache.set(it, b);
+  return b;
+}
+const unionBox = items => items.map(bboxAll).reduce((a, b) => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])],
+  [Infinity, Infinity, -Infinity, -Infinity]);
+
+function segX(ax, ay, bx, by, cx, cy, dx, dy) {   // 線分 AB と CD が交わるか
+  const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax), d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+  if ((d1 > 0) === (d2 > 0)) return false;
+  const d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx), d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+  return (d3 > 0) !== (d4 > 0);
+}
+// 範囲（閉じた多角形 poly、外接長方形 pb）に項目の一部でもかかっているか。
+// 線は一部でも入っていれば線全体を選ぶ（消しゴムのように切り分けない）
+function regionHit(it, poly, pb) {
+  const b = bboxAll(it);
+  if (b[0] > pb[2] || b[2] < pb[0] || b[1] > pb[3] || b[3] < pb[1]) return false;
+  for (const o of outlines(it)) {
+    const q = o.q;
+    for (let i = 0; i < q.length; i += 2) if (inPoly(poly, q[i], q[i + 1])) return true;
+    if (o.area && inPoly(q, poly[0], poly[1])) return true;     // 範囲がまるごと画像や面の内側にある
+    for (let i = 0; i + 3 < q.length; i += 2) {
+      for (let j = 0, k = poly.length - 2; j < poly.length; k = j, j += 2) {
+        if (segX(q[i], q[i + 1], q[i + 2], q[i + 3], poly[k], poly[k + 1], poly[j], poly[j + 1])) return true;
+      }
+    }
+  }
+  return false;
+}
+// なぞった範囲の多角形。投げ縄はなぞった点の並び、長方形は始点と今の点を対角とする
+function regionPoly(g) {
+  const p = g.pts;
+  if (g.lasso) return p;
+  const x0 = p[0], y0 = p[1], x1 = p[p.length - 2], y1 = p[p.length - 1];
+  return [x0, y0, x1, y0, x1, y1, x0, y1];
+}
+
+/* 相似変換 T = {px, py, s, a, dx, dy}: 点 (px,py) を中心に s 倍して a ラジアン回し、(dx,dy) だけ動かす。
+   xformItem は変換した複製を返す（id はそのまま）。線の太さは変えない。
+   線・面は点を直接動かし、図形・画像は中心を動かして大きさと rot を変える。グループは中の項目を同じように変換する。 */
+function mapPt(T, x, y) {
+  const c = Math.cos(T.a), s = Math.sin(T.a), ux = (x - T.px) * T.s, uy = (y - T.py) * T.s;
+  return [r2(T.px + ux * c - uy * s + T.dx), r2(T.py + ux * s + uy * c + T.dy)];
+}
+const moveT = (dx, dy) => ({ px: 0, py: 0, s: 1, a: 0, dx, dy });
+function xformItem(it, T) {
+  const o = { ...it };
+  const mp = q => { const r = new Array(q.length); for (let i = 0; i < q.length; i += 2) [r[i], r[i + 1]] = mapPt(T, q[i], q[i + 1]); return r; };
+  const spin = () => { const a = normA((it.rot || 0) + T.a); if (a) o.rot = a; else delete o.rot; };
+  if (it.t === 'G') { o.ch = it.ch.map(c => xformItem(c, T)); if (T.a) spin(); }
+  else if (it.t === 's') o.p = mp(it.p);
+  else if (it.t === 'f') o.r = it.r.map(mp);
+  else if (isLine(it)) [o.x0, o.y0, o.x1, o.y1] = mp([it.x0, it.y0, it.x1, it.y1]);
+  else {
+    const [cx, cy] = centerOf(it), [nx, ny] = mapPt(T, cx, cy);
+    if (it.t === 'i') { o.w = r2(it.w * T.s); o.h = r2(it.h * T.s); o.x = r2(nx - o.w / 2); o.y = r2(ny - o.h / 2); }
+    else {
+      o.x0 = r2(nx + (it.x0 - cx) * T.s); o.x1 = r2(nx + (it.x1 - cx) * T.s);
+      o.y0 = r2(ny + (it.y0 - cy) * T.s); o.y1 = r2(ny + (it.y1 - cy) * T.s);
+    }
+    if (T.a) spin();
+  }
+  return o;
+}
+// 図形・画像1つを右下の取っ手で大きさを変える。回転していても、その向きのまま左上の角を止めて右辺と下辺を動かす。
+// 図形は縦横比が自由、画像は縦横比を保つ
+function resizeBox(o, dx, dy) {
+  const img = o.t === 'i', a = o.rot || 0, [cx, cy] = centerOf(o);
+  const bx = img ? o.x : Math.min(o.x0, o.x1), by = img ? o.y : Math.min(o.y0, o.y1);
+  const w0 = img ? o.w : Math.abs(o.x1 - o.x0), h0 = img ? o.h : Math.abs(o.y1 - o.y0);
+  const F = rotP(bx, by, cx, cy, a);                         // 止める角
+  const [lx, ly] = rotP(dx, dy, 0, 0, -a);                   // 動かした量を図形の向きで見る
+  const min = img ? 12 : 2;
+  const w = Math.max(min, w0 + lx), h = img ? w * o.h / o.w : Math.max(min, h0 + ly);
+  const [ncx, ncy] = rotP(F[0] + w / 2, F[1] + h / 2, F[0], F[1], a);
+  const n = { ...o };
+  if (img) { n.w = r2(w); n.h = r2(h); n.x = r2(ncx - w / 2); n.y = r2(ncy - h / 2); }
+  else {                                     // 始点と終点の向き（三角形・星の上下）は保つ
+    const sx = o.x1 >= o.x0 ? 1 : -1, sy = o.y1 >= o.y0 ? 1 : -1;
+    n.x0 = r2(ncx - sx * w / 2); n.x1 = r2(ncx + sx * w / 2); n.y0 = r2(ncy - sy * h / 2); n.y1 = r2(ncy + sy * h / 2);
+  }
+  return n;
+}
+
+// 選択中の項目（重なり順）。選んだページが表示されていなければ空
+function selItems() {
+  if (!sel || !sheets.some(s => s.page === sel.page)) return [];
+  const ids = new Set(sel.ids);
+  return (S.annots[sel.page] || []).filter(i => ids.has(i.id));
+}
+function setSel(page, items) {
+  sel = items.length ? { page, ids: items.map(i => i.id), rot: items.length === 1 && !isLine(items[0]) ? items[0].rot || 0 : 0 } : null;
+}
+// 選択枠: 向き a で見たときの外接長方形 {cx, cy, w, h, rot}
+let frameMemo = null;
+function selFrame(items, a) {
+  const m = frameMemo;
+  if (m && m.a === a && m.items.length === items.length && m.items.every((x, i) => x === items[i])) return m.f;
+  const c = Math.cos(a), s = Math.sin(a);
+  let u0 = Infinity, v0 = Infinity, u1 = -Infinity, v1 = -Infinity;
+  for (const it of items) for (const o of outlines(it)) {
+    const h = o.w / 2, q = o.q;
+    for (let i = 0; i < q.length; i += 2) {
+      const u = q[i] * c + q[i + 1] * s, v = q[i + 1] * c - q[i] * s;   // -a だけ回した座標
+      if (u - h < u0) u0 = u - h; if (u + h > u1) u1 = u + h;
+      if (v - h < v0) v0 = v - h; if (v + h > v1) v1 = v + h;
+    }
+  }
+  const um = (u0 + u1) / 2, vm = (v0 + v1) / 2;
+  const f = { cx: um * c - vm * s, cy: um * s + vm * c, w: u1 - u0, h: v1 - v0, rot: a };
+  frameMemo = { items, a, f };
+  return f;
+}
+// 枠の中心から枠の向きで (lx,ly) の位置
+const frameP = (f, lx, ly) => [f.cx + lx * Math.cos(f.rot) - ly * Math.sin(f.rot), f.cy + lx * Math.sin(f.rot) + ly * Math.cos(f.rot)];
+// 選択枠と取っ手の画面上の位置（ステージ左上が原点のピクセル）。描画と当たり判定で共通に使う
+function selGeom() {
+  const items = selItems();
+  if (!items.length) return null;
+  const sh = sheets.find(s => s.page === sel.page), t = sheetXform(sh);
+  const P = p => [t.ox + p[0] * t.k, t.oy + p[1] * t.k];
+  const r = { items, sh, t };
+  if (items.length === 1 && isLine(items[0])) {
+    const it = items[0];
+    r.ends = [P([it.x0, it.y0]), P([it.x1, it.y1])];
+    return r;
+  }
+  const f = selFrame(items, sel.rot || 0), pad = 6 / t.k, hw = f.w / 2 + pad, hh = f.h / 2 + pad;
+  Object.assign(r, {
+    f, hw, hh, group: items.length === 1 && items[0].t === 'G',
+    corners: [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([a, b]) => P(frameP(f, a, b))),
+    topMid: P(frameP(f, 0, -hh)),
+    rot: P(frameP(f, 0, -hh - ROT_STEM_PX / t.k)),
+  });
+  return r;
+}
+// 押した位置が選択中のものの取っ手・枠の内側なら、その操作を返す
+function selHandleAt(e) {
+  const sg = selGeom();
+  if (!sg) return null;
+  const sr = stage.getBoundingClientRect(), x = e.clientX - sr.left, y = e.clientY - sr.top;
+  const near = p => Math.hypot(p[0] - x, p[1] - y) < HANDLE_PX;
+  const px = (x - sg.t.ox) / sg.t.k, py = (y - sg.t.oy) / sg.t.k;
+  if (sg.ends) {
+    if (near(sg.ends[1])) return { sg, mode: 'end1' };
+    if (near(sg.ends[0])) return { sg, mode: 'end0' };
+    return hitItem(sg.items[0], px, py, 14 / sg.t.k) ? { sg, mode: 'move' } : null;
+  }
+  if (near(sg.rot)) return { sg, mode: 'rot' };
+  if (near(sg.corners[2])) return { sg, mode: sg.items.length === 1 && boxItem(sg.items[0]) ? 'resize' : 'scale' };
+  const f = sg.f, [u, v] = rotP(px, py, f.cx, f.cy, -f.rot);
+  return Math.abs(u - f.cx) <= sg.hw && Math.abs(v - f.cy) <= sg.hh ? { sg, mode: 'move' } : null;
+}
+
+/* 選択の道具での操作:
+   選択中のものの取っ手 → 回転・拡大縮小（直線は両端）。選択枠の内側 → まとめて移動。
+   何かに触れた → それだけを選んで移動。何もないところ → なぞった範囲（長方形または投げ縄）で選ぶ */
+function startSelect(e, isTouch) {
+  const base = { tool: 'select', id: e.pointerId, touch: isTouch, pushed: false };
+  const hd = selHandleAt(e);
+  if (hd) {
+    const sh = hd.sg.sh, r = sh.el.getBoundingClientRect();
+    g = { ...base, sh, r, k: r.width / sh.W, mode: hd.mode, orig: hd.sg.items, f0: hd.sg.f };
+    [g.x0, g.y0] = pt(g, e);
+    return;
+  }
+  const h = locate(e);
+  if (!h) { if (sel) { sel = null; syncUI(); drawOverlay(); } return; }
+  g = { ...base, sh: h.sh, k: h.k, r: h.r, x0: h.x, y0: h.y };
+  const arr = S.annots[h.sh.page] || [];
+  let it = null;
+  for (let i = arr.length - 1; i >= 0 && !it; i--) if (hitItem(arr[i], h.x, h.y, 12 / h.k)) it = arr[i];   // 手前にあるものから探す
+  if (it) {
+    setSel(h.sh.page, [it]);
+    Object.assign(g, { mode: 'move', orig: [it] });
+  } else {
+    sel = null;
+    Object.assign(g, { mode: 'region', lasso: S.selMode === 'lasso', pts: [r2(h.x), r2(h.y)] });
+  }
+  syncUI(); drawOverlay();
+}
+function replaceItems(page, next) {
+  const m = new Map(next.map(i => [i.id, i]));
+  S.annots[page] = (S.annots[page] || []).map(i => m.get(i.id) || i);
+}
+// 移動中の選択を見開きの隣のページへ移す。画面上の位置が変わらないように座標を付け替える
+function moveSelToSheet(nsh) {
+  const osh = g.sh, ro = osh.el.getBoundingClientRect(), rn = nsh.el.getBoundingClientRect(), k = rn.width / nsh.W;
+  const dx = (ro.left - rn.left) / k, dy = (ro.top - rn.top) / k + osh.m - nsh.m;
+  const top = undo[undo.length - 1];
+  if (top.page !== nsh.page && !(top.also || []).some(e => e.page === nsh.page)) {   // 移る先のページも同じ1回の取り消しで戻す
+    (top.also = top.also || []).push({ page: nsh.page, items: (S.annots[nsh.page] || []).slice() });
+  }
+  const ids = new Set(sel.ids), arr = S.annots[osh.page];
+  S.annots[osh.page] = arr.filter(a => !ids.has(a.id));
+  S.annots[nsh.page] = [...(S.annots[nsh.page] || []), ...arr.filter(a => ids.has(a.id))];
+  g.orig = g.orig.map(o => xformItem(o, moveT(dx, dy)));
+  g.x0 += dx; g.y0 += dy;
+  g.sh = nsh; g.k = k; g.r = rn;
+  sel.page = nsh.page;
+  drawAnn(osh);
+}
+function selDrag(e) {
+  let [x, y] = pt(g, e);
+  if (g.mode === 'region') {
+    const p = g.pts;
+    if (!g.lasso) g.pts = [p[0], p[1], r2(x), r2(y)];
+    else {
+      const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+      for (const ev of evs.length ? evs : [e]) {
+        const [qx, qy] = pt(g, ev);
+        if (Math.hypot(qx - p[p.length - 2], qy - p[p.length - 1]) * g.k >= 3) p.push(r2(qx), r2(qy));
+      }
+    }
+    queueOverlay();
+    return;
+  }
+  if (!g.pushed) {                           // 動かし始めたときに履歴へ積む
+    if (Math.hypot(x - g.x0, y - g.y0) * g.k < 3) return;
+    pushUndo(g.sh.page); g.pushed = true;
+  }
+  if (g.mode === 'move') {                   // 見開きの隣のページの上まで動かしたら、そのページへ移す
+    const h = locate(e);
+    if (h && h.sh !== g.sh) { moveSelToSheet(h.sh); [x, y] = pt(g, e); }
+  }
+  const dx = x - g.x0, dy = y - g.y0, f = g.f0;
+  let next;
+  if (g.mode === 'move') next = g.orig.map(o => xformItem(o, moveT(dx, dy)));
+  else if (g.mode === 'rot') {               // 枠の中心まわりに、取っ手を動かした角度だけ回す
+    const a = snapA(f.rot + Math.atan2(y - f.cy, x - f.cx) - Math.atan2(g.y0 - f.cy, g.x0 - f.cx)) - f.rot;
+    next = g.orig.map(o => xformItem(o, { px: f.cx, py: f.cy, s: 1, a, dx: 0, dy: 0 }));
+    sel.rot = normA(f.rot + a);
+  } else if (g.mode === 'scale') {           // 左上の角を止め、縦横の比率を保って拡大縮小する
+    const A = frameP(f, -f.w / 2, -f.h / 2), H = frameP(f, f.w / 2, f.h / 2);
+    const vx = H[0] - A[0], vy = H[1] - A[1], L2 = vx * vx + vy * vy;
+    const s = L2 < 1e-6 ? 1 : Math.max(1 + (dx * vx + dy * vy) / L2, 4 / Math.sqrt(L2), 0.02);
+    next = g.orig.map(o => xformItem(o, { px: A[0], py: A[1], s, a: 0, dx: 0, dy: 0 }));
+  } else if (g.mode === 'resize') next = [resizeBox(g.orig[0], dx, dy)];
+  else {                                     // 直線の端を動かす
+    const o = g.orig[0], n = { ...o };
+    if (g.mode === 'end0') { n.x0 = r2(o.x0 + dx); n.y0 = r2(o.y0 + dy); } else { n.x1 = r2(o.x1 + dx); n.y1 = r2(o.y1 + dy); }
+    next = [n];
+  }
+  replaceItems(g.sh.page, next);
+  drawAnn(g.sh); drawOverlay(); touch();
+}
+function finishSelect() {
+  if (g.mode === 'region') {
+    const poly = regionPoly(g), page = g.sh.page;
+    const xs = poly.filter((_, i) => i % 2 === 0), ys = poly.filter((_, i) => i % 2 === 1);
+    const pb = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    const big = (pb[2] - pb[0]) * g.k >= 4 || (pb[3] - pb[1]) * g.k >= 4;    // 小さすぎる範囲はただのタップとみなす
+    setSel(page, big ? (S.annots[page] || []).filter(it => regionHit(it, poly, pb)) : []);
+  }
+  g = null;
+  syncUI(); drawOverlay();
 }
 
 stage.addEventListener('pointermove', e => {
@@ -957,23 +1336,6 @@ stage.addEventListener('pointermove', e => {
   } else if (g.tool && e.pointerId === g.id) moveTool(e);
 });
 
-// ドラッグ中の画像・図形を別のページへ移す。画面上の位置が変わらないように座標を付け替える
-function moveToSheet(g, nsh) {
-  const osh = g.sh, ro = osh.el.getBoundingClientRect(), rn = nsh.el.getBoundingClientRect(), k = rn.width / nsh.W;
-  const dx = (ro.left - rn.left) / k, dy = (ro.top - rn.top) / k + osh.m - nsh.m;
-  const it = g.it, top = undo[undo.length - 1];
-  if (top.page !== nsh.page && !(top.also || []).some(e => e.page === nsh.page)) {   // 移る先のページも同じ1回の取り消しで戻す
-    (top.also = top.also || []).push({ page: nsh.page, items: (S.annots[nsh.page] || []).slice() });
-  }
-  S.annots[osh.page] = S.annots[osh.page].filter(a => a !== it);
-  S.annots[nsh.page] = [...(S.annots[nsh.page] || []), it];
-  const o = g.o;
-  if (it.t === 'g') { o.x0 += dx; o.x1 += dx; o.y0 += dy; o.y1 += dy; } else { o.x += dx; o.y += dy; }
-  g.x0 += dx; g.y0 += dy;
-  g.sh = nsh; g.k = k; g.r = rn;
-  sel = { page: nsh.page, id: it.id };
-  drawAnn(osh);
-}
 function moveTool(e) {
   if (g.stroke && g.stroke.t === 'g') {
     const [x, y] = pt(g, e);
@@ -990,33 +1352,7 @@ function moveTool(e) {
   } else if (g.tool === 'eraser') {
     const evs = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
     for (const ev of evs.length ? evs : [e]) { const [x, y] = pt(g, ev); eraseTo(g, x, y); }
-  } else if (g.it) {
-    let [x, y] = pt(g, e);
-    if (!g.pushed) {                           // 動かし始めたときに履歴へ積み、複製を動かす
-      if (Math.hypot(x - g.x0, y - g.y0) * g.k < 3) return;
-      const page = g.sh.page;
-      pushUndo(page); g.pushed = true;
-      const arr = S.annots[page], c = { ...g.it };
-      arr[arr.indexOf(g.it)] = c; g.it = c;
-    }
-    if (g.mode === 'move') {                   // 見開きの隣のページの上まで動かしたら、そのページへ移す
-      const h = locate(e);
-      if (h && h.sh !== g.sh) { moveToSheet(g, h.sh); [x, y] = pt(g, e); }
-    }
-    const it = g.it, o = g.o;
-    const dx = x - g.x0, dy = y - g.y0;
-    if (it.t === 'g') {
-      if (g.mode === 'move') { it.x0 = r2(o.x0 + dx); it.x1 = r2(o.x1 + dx); it.y0 = r2(o.y0 + dy); it.y1 = r2(o.y1 + dy); }
-      else {                                   // 右下の取っ手: 右端と下端にある側の座標を動かす（縦横比は自由）
-        const min = it.k === 'line' ? 0 : 2;
-        const [xa, xb] = o.x1 >= o.x0 ? ['x1', 'x0'] : ['x0', 'x1'], [ya, yb] = o.y1 >= o.y0 ? ['y1', 'y0'] : ['y0', 'y1'];
-        it[xa] = r2(Math.max(o[xb] + min, o[xa] + dx)); it[ya] = r2(Math.max(o[yb] + min, o[ya] + dy));
-      }
-    }
-    else if (g.mode === 'move') { it.x = r2(o.x + x - g.x0); it.y = r2(o.y + y - g.y0); }
-    else { it.w = r2(Math.max(12, o.w + x - g.x0)); it.h = r2(it.w * o.h / o.w); }
-    drawAnn(g.sh); drawOverlay(); touch();
-  }
+  } else if (g.mode) selDrag(e);
 }
 
 function onUp(e) {
@@ -1030,6 +1366,8 @@ function onUp(e) {
       turn((dx > 0) === S.rtl ? 1 : -1);             // 右綴じでは右へ払うと次のページ
     }
     g = null;
+  } else if (g.tool === 'select' && e.pointerId === g.id) {
+    finishSelect();
   } else if (g.tool && e.pointerId === g.id) {
     const st = g.stroke;
     // 図形は、ほとんど動かさずに離したら描かない
@@ -1097,7 +1435,7 @@ async function addImage(blob) {
     const it = { t: 'i', id: uid(), a: id, x: r2(px - w / 2), y: r2(py - h / 2), w: r2(w), h: r2(h) };
     pushUndo(sh.page);
     (S.annots[sh.page] = S.annots[sh.page] || []).push(it);
-    S.tool = 'select'; sel = { page: sh.page, id: it.id };
+    S.tool = 'select'; setSel(sh.page, [it]);
     drawAnn(sh); drawOverlay(); syncUI(); touch();
   } catch (e) {
     alert(e.message);
@@ -1106,6 +1444,7 @@ async function addImage(blob) {
 document.addEventListener('paste', e => {
   const f = [...(e.clipboardData ? e.clipboardData.files : [])].find(f => f.type.startsWith('image/'));
   if (f) { e.preventDefault(); addImage(f); }
+  else if (clip) { e.preventDefault(); pasteClip(); }     // キーボードの ⌘V: 画像がなければアプリ内でコピーしたものを貼る
 });
 async function pasteFromClipboard() {
   try {
@@ -1119,26 +1458,126 @@ async function pasteFromClipboard() {
     alert('クリップボードを読めませんでした。「画像」ボタンからファイルを選んでください。\n(' + e.message + ')');
   }
 }
-// 選択中の画像・図形を、そのページの書き込みの最前面または最背面へ移す。PDF本体は書き込みより常に奥にある
-function reorderSel(front) {
-  const it = selItem();
-  if (!it) return;
-  const page = sel.page, arr = S.annots[page], i = arr.indexOf(it);
-  if (i === (front ? arr.length - 1 : 0)) return;
+/* ---------- 選択したものへの操作 ---------- */
+// 選択中のページの並びを fn(arr, ids, items) で作り直す。fn が null を返したら何もしない（履歴にも積まない）
+function selEdit(fn) {
+  const items = selItems();
+  if (!items.length) return;
+  const page = sel.page, arr = S.annots[page], ids = new Set(sel.ids);
+  const next = fn(arr, ids, items);
+  if (!next) return;
   pushUndo(page);
-  const rest = arr.filter(x => x !== it);
-  S.annots[page] = front ? [...rest, it] : [it, ...rest];
+  S.annots[page] = next;
   const sh = sheets.find(s => s.page === page);
   if (sh) drawAnn(sh);
   drawOverlay(); syncUI(); touch();
 }
+const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+// 選択したものを、そのページの書き込みの最前面または最背面へ移す。選択したもの同士の重なり順は保つ。
+// PDF本体は書き込みより常に奥にある
+function reorderSel(front) {
+  selEdit((arr, ids) => {
+    const mv = arr.filter(i => ids.has(i.id)), rest = arr.filter(i => !ids.has(i.id));
+    const next = front ? [...rest, ...mv] : [...mv, ...rest];
+    return sameList(next, arr) ? null : next;
+  });
+}
 function deleteSel() {
-  const it = selItem();
-  if (!it) return;
-  pushUndo(sel.page);
-  S.annots[sel.page] = S.annots[sel.page].filter(i => i !== it);
-  const sh = sheets.find(s => s.page === sel.page);
-  sel = null;
+  selEdit((arr, ids) => { sel = null; return arr.filter(i => !ids.has(i.id)); });
+}
+// グループは、選んだもののうち一番手前のものの位置に入る
+function groupSel() {
+  selEdit((arr, ids, items) => {
+    if (items.length < 2) return null;
+    const grp = { t: 'G', id: uid(), ch: items }, last = items[items.length - 1];
+    sel = { page: sel.page, ids: [grp.id], rot: 0 };
+    return arr.flatMap(i => i === last ? [grp] : ids.has(i.id) ? [] : [i]);
+  });
+}
+// グループを解除して、中の項目を元の重なり順のまま並びに戻す（1段だけ）。解除したものは選んだままにする
+function ungroupSel() {
+  selEdit((arr, ids, items) => {
+    if (!items.some(i => i.t === 'G')) return null;
+    setSel(sel.page, items.flatMap(i => i.t === 'G' ? i.ch : [i]));
+    return arr.flatMap(i => ids.has(i.id) && i.t === 'G' ? i.ch : [i]);
+  });
+}
+
+/* 属性の変更。グループは中の項目に適用する。手書きの線は一部だけ範囲に入っていても線全体が変わる。
+   c 色 / w 太さ（s m l）/ a 線の不透明度 / f 塗りの濃さ（0 は塗りなし）/ ar 直線の矢印 */
+const leaves = items => items.flatMap(i => i.t === 'G' ? leaves(i.ch) : [i]);
+const ATTR_OK = {
+  c: it => it.t !== 'i',
+  w: it => it.t === 's' || (it.t === 'g' && !filled(it)),
+  a: it => it.t === 's' || (it.t === 'g' && !filled(it)),
+  f: it => it.t === 'f' || (it.t === 'g' && it.k !== 'line'),
+  ar: isLine,
+};
+function attrVal(it, key) {
+  if (key === 'w') return Object.keys(WIDTHS).find(k => Math.abs(WIDTHS[k] * (isMarker(it) ? 6 : 1) - it.w) < 0.01) || '';
+  if (key === 'a') return String(it.a || 1);
+  if (key === 'f') return String(it.f || 0);
+  if (key === 'ar') return String(it.ar | 0);
+  return it.c;
+}
+function withAttr(it, key, v) {
+  if (it.t === 'G') {
+    const ch = it.ch.map(c => withAttr(c, key, v));
+    return sameList(ch, it.ch) ? it : { ...it, ch };
+  }
+  if (!ATTR_OK[key](it) || attrVal(it, key) === v) return it;
+  if (key === 'f' && it.t === 'f' && !+v) return it;   // 消しゴムで削った面は塗りをなくせない（輪郭線を持たないため）
+  const o = { ...it };
+  if (key === 'c') o.c = v;
+  else if (key === 'w') o.w = WIDTHS[v] * (isMarker(it) ? 6 : 1);
+  else if (key === 'a') { if (+v === 1 && it.t === 'g') delete o.a; else o.a = +v; }
+  else if (key === 'f') { if (+v) o.f = +v; else delete o.f; }
+  else if (key === 'ar') { if (+v) o.ar = +v; else delete o.ar; }
+  return o;
+}
+function setSelAttr(key, v) {
+  selEdit((arr, ids) => {
+    const next = arr.map(i => ids.has(i.id) ? withAttr(i, key, v) : i);
+    return sameList(next, arr) ? null : next;
+  });
+}
+
+/* コピーと貼り付け（アプリの中だけのクリップボード）。
+   コピーした時点で項目の複製と、含まれる画像のデータを持っておくので、元のPDFを閉じたり切り替えたりしても貼れる。
+   貼った画像は貼り先のPDFの画像として保存される。
+   位置: 座標はページ左上を原点とするPDFポイント（1pt = 1/72インチ）なので、大きさは変えずに実寸のまま、
+   元と同じ位置に貼る。元と同じページに貼るときだけ、重ならないように右下へ少しずつずらす。
+   貼り先のページが小さくてはみ出すときは、ページ（表示中の枠外領域を含む）の内側に収まるよう平行に移す。 */
+let clip = null;             // {items, assets, doc, page, n}
+function copySel() {
+  const items = selItems();
+  if (!items.length) return;
+  const as = {};
+  for (const it of leaves(items)) if (it.t === 'i' && assets[it.a]) as[it.a] = assets[it.a];
+  clip = { items: JSON.parse(JSON.stringify(items)), assets: as, doc: D.id, page: sel.page, n: 0 };
+  $('status').textContent = items.length > 1 ? `${items.length}個をコピー` : 'コピーしました';
+  syncUI();
+}
+function pasteClip() {
+  if (!clip || !pdf || busy || !sheets.length) return;
+  const same = clip.doc === D.id;
+  // 貼る先: 選択中のページ → 元のページ（表示中なら）→ 見開きの同じ側のページ → 最初のページ
+  const sh = (sel && sheets.find(s => s.page === sel.page)) || (same && sheets.find(s => s.page === clip.page))
+    || sheets.find(s => s.page % 2 === clip.page % 2) || sheets[0];
+  const reid = it => { const o = { ...it, id: uid() }; if (o.t === 'G') o.ch = o.ch.map(reid); return o; };
+  let items = JSON.parse(JSON.stringify(clip.items)).map(reid);
+  let dx = 0, dy = 0;
+  if (same && sh.page === clip.page) { clip.n++; dx = dy = 12 * clip.n; }
+  const b = unionBox(items), y0 = -sh.m, y1 = sh.H + sh.m;
+  if (b[2] + dx > sh.W) dx = sh.W - b[2];
+  if (b[0] + dx < 0) dx = -b[0];
+  if (b[3] + dy > y1) dy = y1 - b[3];
+  if (b[1] + dy < y0) dy = y0 - b[1];
+  if (dx || dy) items = items.map(i => xformItem(i, moveT(dx, dy)));
+  for (const id in clip.assets) if (!assets[id]) { assets[id] = clip.assets[id]; assetsDirty = true; }
+  pushUndo(sh.page);
+  S.annots[sh.page] = [...(S.annots[sh.page] || []), ...items];
+  S.tool = 'select'; setSel(sh.page, items);
   drawAnn(sh); drawOverlay(); syncUI(); touch();
 }
 
@@ -1164,17 +1603,24 @@ async function buildPdf(withMargins) {
     page.drawPage(ep, { x: pos[0], y: pos[1], rotate: degrees(pos[2]) });
     const top = m + H;                       // ページ上端のy（PDFは下が原点）
     page.pushOperators(setLineJoin(LineJoinStyle.Round));
-    for (const it of annots[i] || []) {
+    const drawIt = async it => {
+      if (it.t === 'G') { for (const c of it.ch) await drawIt(c); return; }
       if (filled(it) || it.t === 'f') {
         page.drawSvgPath(svgPath(it), { x: 0, y: top, color: hex(it.c), opacity: it.f });
       } else if (it.t !== 'i') {
         page.drawSvgPath(svgPath(it), { x: 0, y: top, borderColor: hex(it.c), borderWidth: it.w, borderOpacity: it.a || 1, borderLineCap: LineCapStyle.Round });
+        if (isLine(it) && it.ar) for (const h of arrowGeom(it).heads) {
+          page.drawSvgPath(`M ${h[0]} ${h[1]} L ${h[2]} ${h[3]} L ${h[4]} ${h[5]} Z`, { x: 0, y: top, color: hex(it.c), opacity: it.a || 1 });
+        }
       } else if (imgs[it.a]) {
         const data = imgs[it.a];
         const im = emb[it.a] || (emb[it.a] = await (data.startsWith('data:image/jpeg') ? out.embedJpg(data) : out.embedPng(data)));
-        page.drawImage(im, { x: it.x, y: top - it.y - it.h, width: it.w, height: it.h });
+        // pdf-lib は画像の左下の角を (x,y) に置き、そこを中心に反時計回りに回す。画面の時計回り rot は PDF では -rot
+        const [cx, cy] = centerOf(it), [bx, by] = rotP(it.x, it.y + it.h, cx, cy, it.rot || 0);
+        page.drawImage(im, { x: bx, y: top - by, width: it.w, height: it.h, rotate: degrees(-(it.rot || 0) * 180 / Math.PI) });
       }
-    }
+    };
+    for (const it of annots[i] || []) await drawIt(it);
   }
   return out.save();
 }
@@ -1248,20 +1694,49 @@ function syncUI() {
   on($('bMargin'), S.margins);
   $('sMargin').value = String(S.marginSize);
   on($('bFinger'), !S.fingerDraw);          // 画面の表記は「Pencilを使う」。オンのとき指は描かない（fingerDraw の逆）
-  document.querySelectorAll('[data-tool]').forEach(b => on(b, b.dataset.tool === S.tool && (!b.dataset.shape || b.dataset.shape === S.shape)));
+  document.querySelectorAll('[data-tool]').forEach(b => on(b, toolIs(b)));
   document.querySelectorAll('[data-color]').forEach(b => on(b, b.dataset.color === S.color));
   document.querySelectorAll('[data-width]').forEach(b => on(b, b.dataset.width === S.width));
   $('bUndo').disabled = !undo.length; $('bRedo').disabled = !redo.length;
-  $('selBar').hidden = !selItem();
+  syncSelBar();
   $('sFillA').value = String(S.fillA);
+  $('sArrow').value = String(S.arrow);
+  // 直線を選んでいる間は塗りの代わりに矢印の設定を出す（同じ幅なので並びは動かない）
+  const ln = S.tool === 'shape' && S.shape === 'line';
+  $('sFillA').hidden = ln; $('sArrow').hidden = !ln;
   // 塗りありの間は、図形のボタンも塗った形で見せる
   document.querySelectorAll('[data-icon]').forEach(b => { b.textContent = b.dataset.icon[S.fillA ? 1 : 0]; });
   syncDocs();
   for (const id of ['bClose', 'bExport', 'bImage', 'bPaste', 'bLeft', 'bRight', 'bPage', 'bFit']) $(id).disabled = !pdf;
+  $('bPasteClip').disabled = !pdf || !clip;
   if (pdf) {
     const pg = spreadOf(S.cur);
     $('bPage').textContent = (pg.length > 1 ? `${pg[0] + 1}-${pg[1] + 1}` : `${pg[0] + 1}`) + ` / ${pdf.numPages}`;
   }
+}
+// 道具のボタンが今の道具か。図形と選択は、同じ道具の中の種類（data-shape / data-smode）まで見る
+const toolIs = b => b.dataset.tool === S.tool && (!b.dataset.shape || b.dataset.shape === S.shape) && (!b.dataset.smode || b.dataset.smode === S.selMode);
+// 選択中のものに応じて、操作の帯に出す項目を決める。複数の種類を選んでいるときは、どれかに使える属性を出し、
+// 使える項目にだけ適用する。値がそろっていなければ「—」を表示する
+function syncSelBar() {
+  const items = selItems(), bar = $('selBar');
+  bar.hidden = !items.length;
+  if (!items.length) return;
+  const one = items.length === 1 && items[0];
+  $('selInfo').textContent = one ? { s: '手書き', g: isLine(one) ? '直線' : '図形', f: '塗り', i: '画像', G: 'グループ' }[one.t] : `${items.length}個`;
+  const lv = leaves(items);
+  const vals = key => new Set(lv.filter(ATTR_OK[key]).map(i => attrVal(i, key)));
+  const vc = vals('c'), vw = vals('w');
+  $('sgColor').hidden = !vc.size; $('sgWidth').hidden = !vw.size;
+  bar.querySelectorAll('[data-scolor]').forEach(b => b.classList.toggle('on', vc.size === 1 && vc.has(b.dataset.scolor)));
+  bar.querySelectorAll('[data-swidth]').forEach(b => b.classList.toggle('on', vw.size === 1 && vw.has(b.dataset.swidth)));
+  for (const [id, key] of [['sSelAlpha', 'a'], ['sSelFill', 'f'], ['sSelArrow', 'ar']]) {
+    const el = $(id), v = [...vals(key)];
+    el.hidden = !v.length;
+    el.value = v.length === 1 && [...el.options].some(o => o.value === v[0]) ? v[0] : '';
+  }
+  $('bGroup').hidden = items.length < 2;
+  $('bUngroup').hidden = !items.some(i => i.t === 'G');
 }
 let docsSig = null;
 function syncDocs() {                        // 開いているPDFの一覧（プルダウン）
@@ -1308,6 +1783,14 @@ $('sDoc').onchange = e => { const id = e.target.value; syncUI(); if (id) switchD
 $('bClose').onclick = closeDoc;
 $('sFillA').onchange = e => setOpt(() => { S.fillA = +e.target.value; });
 $('bFront').onclick = () => reorderSel(true);
+$('bGroup').onclick = groupSel;
+$('bUngroup').onclick = ungroupSel;
+$('bCopy').onclick = copySel;
+$('bPasteClip').onclick = pasteClip;
+$('sArrow').onchange = e => setOpt(() => { S.arrow = +e.target.value; });
+document.querySelectorAll('[data-scolor]').forEach(b => b.onclick = () => setSelAttr('c', b.dataset.scolor));
+document.querySelectorAll('[data-swidth]').forEach(b => b.onclick = () => setSelAttr('w', b.dataset.swidth));
+for (const [id, key] of [['sSelAlpha', 'a'], ['sSelFill', 'f'], ['sSelArrow', 'ar']]) $(id).onchange = e => { if (e.target.value !== '') setSelAttr(key, e.target.value); };
 $('bBack').onclick = () => reorderSel(false);
 $('bExport').onclick = openExport;
 $('bExpWith').onclick = () => exportPdf(true);
@@ -1324,9 +1807,10 @@ $('bFit').onclick = () => { view = { tx: 0, ty: 0, z: 1 }; clampView(); applyVie
 $('bFinger').onclick = () => setOpt(() => { S.fingerDraw = !S.fingerDraw; });
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setOpt(() => {
   // 選択中の道具をもう一度押すと、何も選んでいない状態になる
-  const same = b.dataset.tool === S.tool && (!b.dataset.shape || b.dataset.shape === S.shape);
+  const same = toolIs(b);
   S.tool = same ? '' : b.dataset.tool;
   if (b.dataset.shape) S.shape = b.dataset.shape;
+  if (b.dataset.smode) S.selMode = b.dataset.smode;
   if (S.colors[S.tool]) S.color = S.colors[S.tool];      // その道具で最後に使った色と太さに戻す
   if (S.widths[S.tool]) S.width = S.widths[S.tool];
   if (S.tool !== 'select') sel = null;
@@ -1334,7 +1818,7 @@ document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setOpt((
 }));
 document.querySelectorAll('[data-color]').forEach(b => b.onclick = () => setOpt(() => {
   S.color = b.dataset.color;
-  if (S.tool !== 'pen' && S.tool !== 'marker' && S.tool !== 'shape') S.tool = 'pen';
+  if (S.tool !== 'pen' && S.tool !== 'marker' && S.tool !== 'shape') { S.tool = 'pen'; sel = null; drawOverlay(); }
   S.colors[S.tool] = S.color;
 }));
 document.querySelectorAll('[data-width]').forEach(b => b.onclick = () => setOpt(() => {
@@ -1358,7 +1842,10 @@ addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft') turn(S.rtl ? 1 : -1);
   else if (e.key === 'ArrowRight') turn(S.rtl ? -1 : 1);
   else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? stepHistory(redo, undo) : stepHistory(undo, redo); }
-  else if ((e.key === 'Delete' || e.key === 'Backspace') && selItem()) { e.preventDefault(); deleteSel(); }
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && sel) { e.preventDefault(); deleteSel(); }
+  else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c' && sel) { e.preventDefault(); copySel(); }
+  else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'g' && sel) { e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); }
+  else if (e.key === 'Escape' && sel) { sel = null; syncUI(); drawOverlay(); }
 });
 stage.addEventListener('dragover', e => e.preventDefault());
 stage.addEventListener('drop', e => {
