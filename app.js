@@ -1552,22 +1552,41 @@ async function addImage(blob) {
     if (e.photo) photoFail(); else alert(e.message);
   } finally { URL.revokeObjectURL(url); }
 }
+/* 貼り付け（ボタンとキーボードの ⌘V で共通）。端末のクリップボードに最後に入れたものを貼る。
+   1. このアプリで「コピー」したときの目印 → アプリ内でコピーした書き込み
+   2. 画像 → 画像（ほかのアプリでコピーしたもの）
+   3. それ以外（ほかのアプリの文字など）→ アプリ内でコピーした書き込みがあればそれ
+   クリップボードを読めないときも、アプリ内でコピーした書き込みがあればそれを貼る */
+const NOTHING_TO_PASTE = '貼れるものがありません。ほかのアプリで画像をコピーするか、このアプリで書き込みを選んで「コピー」してください。';
 document.addEventListener('paste', e => {
-  const f = [...(e.clipboardData ? e.clipboardData.files : [])].find(f => f.type.startsWith('image/'));
-  if (f) { e.preventDefault(); addImage(f); }
-  else if (clip) { e.preventDefault(); pasteClip(); }     // キーボードの ⌘V: 画像がなければアプリ内でコピーしたものを貼る
+  const cd = e.clipboardData;
+  const f = [...(cd ? cd.files : [])].find(f => f.type.startsWith('image/'));
+  const text = cd ? cd.getData('text/plain') : '';
+  if (clip && text === clip.tag) { e.preventDefault(); pasteClip(); }
+  else if (f) { e.preventDefault(); addImage(f); }
+  else if (clip) { e.preventDefault(); pasteClip(); }
 });
 async function pasteFromClipboard() {
-  try {
-    const items = await navigator.clipboard.read();
-    for (const it of items) {
-      const type = it.types.find(t => t.startsWith('image/'));
-      if (type) return addImage(await it.getType(type));
-    }
-    alert('クリップボードに画像がありません');
-  } catch (e) {
+  let items;
+  try { items = await navigator.clipboard.read(); }
+  catch (e) {
+    if (clip) return pasteClip();
     alert('クリップボードを読めませんでした。「画像」ボタンからファイルを選んでください。\n(' + e.message + ')');
+    return;
   }
+  if (clip) {
+    for (const it of items) {
+      if (!it.types.includes('text/plain')) continue;
+      const text = await (await it.getType('text/plain')).text().catch(() => '');
+      if (text === clip.tag) return pasteClip();
+    }
+  }
+  for (const it of items) {
+    const type = it.types.find(t => t.startsWith('image/'));
+    if (type) return addImage(await it.getType(type));
+  }
+  if (clip) return pasteClip();
+  alert(NOTHING_TO_PASTE);
 }
 /* ---------- 選択したものへの操作 ---------- */
 // 選択中のページの並びを fn(arr, ids, items) で作り直す。fn が null を返したら何もしない（履歴にも積まない）
@@ -1659,13 +1678,17 @@ function setSelAttr(key, v) {
    位置: 座標はページ左上を原点とするPDFポイント（1pt = 1/72インチ）なので、大きさは変えずに実寸のまま、
    元と同じ位置に貼る。元と同じページに貼るときだけ、重ならないように右下へ少しずつずらす。
    貼り先のページが小さくてはみ出すときは、ページ（表示中の枠外領域を含む）の内側に収まるよう平行に移す。 */
-let clip = null;             // {items, assets, doc, page, n}
+let clip = null;             // {items, assets, doc, page, n, tag}
+const CLIP_TAG = 'daihon-note-copy:';
 function copySel() {
   const items = selItems();
   if (!items.length) return;
   const as = {};
   for (const it of leaves(items)) if (it.t === 'i' && assets[it.a]) as[it.a] = assets[it.a];
-  clip = { items: JSON.parse(JSON.stringify(items)), assets: as, doc: D.id, page: sel.page, n: 0 };
+  clip = { items: JSON.parse(JSON.stringify(items)), assets: as, doc: D.id, page: sel.page, n: 0, tag: CLIP_TAG + uid() };
+  // 端末のクリップボードにも目印を書いておく。「貼り付け」で、最後にコピーしたのがこのアプリの書き込みか、
+  // ほかのアプリの画像かを見分けるため（書けなかったときは、画像がなければアプリ内のコピーを貼る）
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(clip.tag).catch(() => {});
   notify(items.length > 1 ? `${items.length}個をコピー` : 'コピーしました');
   syncUI();
 }
@@ -1819,7 +1842,6 @@ function syncUI() {
   document.querySelectorAll('[data-icon]').forEach(b => { b.textContent = b.dataset.icon[S.fillA ? 1 : 0]; });
   syncDocs();
   for (const id of ['bClose', 'bExport', 'bImage', 'bPaste', 'bLeft', 'bRight', 'bPage', 'bFit']) $(id).disabled = !pdf;
-  $('bPasteClip').disabled = !pdf || !clip;
   if (pdf) {
     const pg = spreadOf(S.cur);
     $('bPage').textContent = (pg.length > 1 ? `${pg[0] + 1}-${pg[1] + 1}` : `${pg[0] + 1}`) + ` / ${pdf.numPages}`;
@@ -1904,7 +1926,6 @@ $('bAddSel').onclick = () => { addMode = !addMode; syncUI(); };
 $('bGroup').onclick = groupSel;
 $('bUngroup').onclick = ungroupSel;
 $('bCopy').onclick = copySel;
-$('bPasteClip').onclick = pasteClip;
 $('sArrow').onchange = e => setOpt(() => { S.arrow = +e.target.value; });
 document.querySelectorAll('[data-scolor]').forEach(b => b.onclick = () => setSelAttr('c', b.dataset.scolor));
 document.querySelectorAll('[data-swidth]').forEach(b => b.onclick = () => setSelAttr('w', b.dataset.swidth));
