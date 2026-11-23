@@ -49,6 +49,7 @@ let busy = false;            // PDFの追加・切り替え・削除の最中
 let pdf = null, pdfBytes = null, sizes = [];
 let sheets = [], view = { tx: 0, ty: 0, z: 1 }, base = { s: 1, w: 0, h: 0 };
 let undo = [], redo = [], sel = null, renderedZ = 1;
+let addMode = false;          // 「追加選択」: オンの間は、押したものや囲んだものを選択に足す（選択済みのものを押すと外す）
 const pick = (o, keys) => { const r = {}; for (const k of keys) if (k in o) r[k] = o[k]; return r; };
 
 /* ---------- IndexedDB ---------- */
@@ -1213,27 +1214,34 @@ function selHandleAt(e) {
 
 /* 選択の道具での操作:
    選択中のものの取っ手 → 回転・拡大縮小（直線は両端）。選択枠の内側 → まとめて移動。
-   何かに触れた → それだけを選んで移動。何もないところ → なぞった範囲（長方形または投げ縄）で選ぶ */
+   何かに触れた → それだけを選んで移動。何もないところ → なぞった範囲（長方形または投げ縄）で選ぶ
+   追加選択がオンの間は、取っ手は同じように使えるが、枠の内側を押しても移動せず、
+   触れたものを選択に足す（選択済みなら外す）。なぞった範囲で選んだものも選択に足す */
 function startSelect(e, isTouch) {
   const base = { tool: 'select', id: e.pointerId, touch: isTouch, pushed: false };
   const hd = selHandleAt(e);
-  if (hd) {
+  if (hd && !(addMode && hd.mode === 'move')) {
     const sh = hd.sg.sh, r = sh.el.getBoundingClientRect();
     g = { ...base, sh, r, k: r.width / sh.W, mode: hd.mode, orig: hd.sg.items, f0: hd.sg.f };
     [g.x0, g.y0] = pt(g, e);
     return;
   }
   const h = locate(e);
-  if (!h) { if (sel) { sel = null; syncUI(); drawOverlay(); } return; }
+  if (!h) { if (sel && !addMode) { sel = null; syncUI(); drawOverlay(); } return; }
   g = { ...base, sh: h.sh, k: h.k, r: h.r, x0: h.x, y0: h.y };
   const arr = S.annots[h.sh.page] || [];
   let it = null;
   for (let i = arr.length - 1; i >= 0 && !it; i--) if (hitItem(arr[i], h.x, h.y, 12 / h.k)) it = arr[i];   // 手前にあるものから探す
-  if (it) {
+  if (it && addMode) {                       // 追加選択: 押したものを足す。選択済みなら外す
+    const ids = new Set(sel && sel.page === h.sh.page ? sel.ids : []);
+    if (ids.has(it.id)) ids.delete(it.id); else ids.add(it.id);
+    setSel(h.sh.page, arr.filter(i => ids.has(i.id)));
+    g = null;
+  } else if (it) {
     setSel(h.sh.page, [it]);
     Object.assign(g, { mode: 'move', orig: [it] });
   } else {
-    sel = null;
+    if (!addMode) sel = null;
     Object.assign(g, { mode: 'region', lasso: S.selMode === 'lasso', pts: [r2(h.x), r2(h.y)] });
   }
   syncUI(); drawOverlay();
@@ -1309,7 +1317,12 @@ function finishSelect() {
     const xs = poly.filter((_, i) => i % 2 === 0), ys = poly.filter((_, i) => i % 2 === 1);
     const pb = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
     const big = (pb[2] - pb[0]) * g.k >= 4 || (pb[3] - pb[1]) * g.k >= 4;    // 小さすぎる範囲はただのタップとみなす
-    setSel(page, big ? (S.annots[page] || []).filter(it => regionHit(it, poly, pb)) : []);
+    const arr = S.annots[page] || [], hits = big ? arr.filter(it => regionHit(it, poly, pb)) : [];
+    if (!addMode) setSel(page, hits);
+    else if (hits.length) {                  // 追加選択: 囲んだものを今の選択に足す（何も囲まなければ選択はそのまま）
+      const ids = new Set([...(sel && sel.page === page ? sel.ids : []), ...hits.map(i => i.id)]);
+      setSel(page, arr.filter(i => ids.has(i.id)));
+    }
   }
   g = null;
   syncUI(); drawOverlay();
@@ -1725,6 +1738,8 @@ const toolIs = b => b.dataset.tool === S.tool && (!b.dataset.shape || b.dataset.
 function syncSelBar() {
   const items = selItems(), bar = $('selBar');
   bar.hidden = !items.length;
+  if (!items.length) addMode = false;        // 選択がなくなったら追加選択も終える
+  $('bAddSel').classList.toggle('on', addMode);
   if (!items.length) return;
   const one = items.length === 1 && items[0];
   $('selInfo').textContent = one ? { s: '手書き', g: isLine(one) ? '直線' : '図形', f: '塗り', i: '画像', G: 'グループ' }[one.t] : `${items.length}個`;
@@ -1787,6 +1802,7 @@ $('sDoc').onchange = e => { const id = e.target.value; syncUI(); if (id) switchD
 $('bClose').onclick = closeDoc;
 $('sFillA').onchange = e => setOpt(() => { S.fillA = +e.target.value; });
 $('bFront').onclick = () => reorderSel(true);
+$('bAddSel').onclick = () => { addMode = !addMode; syncUI(); };
 $('bGroup').onclick = groupSel;
 $('bUngroup').onclick = ungroupSel;
 $('bCopy').onclick = copySel;
