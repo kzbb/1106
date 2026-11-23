@@ -32,6 +32,9 @@ button.col::after {
   background: var(--c); border: 1px solid #fff8;
 }
 button.col.on { background: #eee; border-color: #fff; }
+/* 白は、選択中の明るい背景でも見分けられるように縁を濃くする */
+button.col[style*="#ffffff"]::after { border: 2px solid #8a8a90; }
+button.col[style*="#ffffff"].on::after { border-color: #0a66d8; }
 #menu {
   position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 8px;
   padding: 10px; border-radius: 10px; background: #1c1c1e; border: 1px solid #555; box-shadow: 0 6px 20px #0009;
@@ -39,6 +42,7 @@ button.col.on { background: #eee; border-color: #fff; }
 .mrow { display: flex; align-items: center; gap: 6px; }
 .mrow span { width: 3.5em; font-size: 12px; color: #9a9aa0; }
 .mrow button, .mrow select { min-height: 40px; }
+#sArrow { padding: 0 4px; font-size: 16px; }
 #sDoc { width: 11em; text-overflow: ellipsis; }   /* 幅を固定し、PDFの名前でツールバーの並びが変わらないようにする */
 #bPage { min-width: 92px; font-variant-numeric: tabular-nums; }
 #status { font-size: 12px; color: #9a9aa0; min-width: 4.5em; text-align: right; }
@@ -67,10 +71,16 @@ button.col.on { background: #eee; border-color: #fff; }
 
 #selBar {
   position: absolute; left: 50%; bottom: max(12px, env(safe-area-inset-bottom)); transform: translateX(-50%);
-  display: flex; gap: 6px; padding: 6px; border-radius: 10px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border-radius: 10px;
+  width: max-content; max-width: calc(100% - 16px);
   background: #1c1c1eee; border: 1px solid #000; box-shadow: 0 2px 10px #0006;
 }
-#selBar button { min-height: 40px; white-space: nowrap; }
+#selBar.top { bottom: auto; top: 12px; }      /* 選んだものが下のほうにあるとき */
+.srow { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
+#selCols { display: flex; gap: 4px; }
+#selBar button, #selBar select { min-height: 40px; white-space: nowrap; }
+#selBar button.col { width: 40px; }
+#selInfo { font-size: 12px; color: #9a9aa0; min-width: 2.5em; text-align: right; }
 
 #empty {
   position: absolute; inset: 0; display: flex; flex-direction: column;
