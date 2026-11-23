@@ -16,7 +16,11 @@ function walk(p) {
   if (!statSync(abs).isDirectory()) return [p];
   return readdirSync(abs).filter(n => !n.startsWith('.')).sort().flatMap(n => walk(join(p, n)));
 }
-const files = ENTRIES.flatMap(walk).map(p => p.split(sep).join('/'));
+// 拡張子のないファイル（pdf.js のライセンス文書 LICENSE など）は保存しない。
+// Amplify はこれらを末尾に / を付けた URL へ転送して 404 を返すため、1つでも入っていると
+// sw.js のインストールが毎回失敗し、オフラインで使えなくなる。アプリの動作には使わない
+const files = ENTRIES.flatMap(walk).map(p => p.split(sep).join('/'))
+  .filter(p => p.split('/').pop().includes('.'));
 
 // 全ファイルの内容から版を決める。どれか1つでも変われば VERSION が変わる
 const h = createHash('sha256');

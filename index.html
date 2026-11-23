@@ -28,11 +28,6 @@
   </div>
   <div class="grp">
     <button class="shp" data-tool="shape" data-shape="line" title="直線（始点から終点までドラッグ）" aria-label="直線">／</button>
-    <select id="sArrow" title="これから描く直線の矢印。― 矢印なし、→ 片矢印（ドラッグの終点側に矢じり）、↔ 両矢印" aria-label="直線の矢印">
-      <option value="0">―</option>
-      <option value="1">→</option>
-      <option value="2">↔</option>
-    </select>
     <button class="shp" data-tool="shape" data-shape="ellipse" title="円・楕円" aria-label="円・楕円" data-icon="○●">○</button>
     <button class="shp" data-tool="shape" data-shape="tri" title="三角形" aria-label="三角形" data-icon="△▲">△</button>
     <button class="shp" data-tool="shape" data-shape="rect" title="四角形" aria-label="四角形" data-icon="□■">□</button>
@@ -44,6 +39,11 @@
       <option value="0.75">塗り 75%</option>
       <option value="1">塗り 100%</option>
     </select>
+    <select id="sArrow" title="これから描く直線の矢印（片矢印は描き終わりの側に付く）" hidden>
+      <option value="0">矢印なし</option>
+      <option value="1">片矢印</option>
+      <option value="2">両矢印</option>
+    </select>
   </div>
   <div class="grp">
     <button class="col" data-color="#111111" style="--c:#111111" aria-label="黒"></button>
@@ -51,7 +51,7 @@
     <button class="col" data-color="#0050d0" style="--c:#0050d0" aria-label="青"></button>
     <button class="col" data-color="#008a3c" style="--c:#008a3c" aria-label="緑"></button>
     <button class="col" data-color="#f5c400" style="--c:#f5c400" aria-label="黄"></button>
-    <button class="col" data-color="#ffffff" style="--c:#ffffff" aria-label="白"></button>
+    <button class="col light" data-color="#ffffff" style="--c:#ffffff" aria-label="白"></button>
   </div>
   <div class="grp">
     <button data-width="s" title="線の太さ・消しゴムの大きさ">細</button>
@@ -60,11 +60,11 @@
   </div>
   <!-- 画像と、置いたものの選択 -->
   <div class="grp">
-    <button data-tool="select" data-sel="rect" title="書き込み・図形・画像を選ぶ。押して1つ選ぶか、何もないところから四角で囲む（少しでもかかったものを選ぶ）。選んだものはドラッグで動かし、右下の丸で大きさを変え、上の丸で回す">選択</button>
-    <button data-tool="select" data-sel="lasso" title="選択と同じ。囲むときに、自由な形でなぞって囲む">投げ縄</button>
+    <button data-tool="select" data-smode="rect" title="書き込みを選ぶ。触れたものを選ぶか、何もないところから長方形で囲む">選択</button>
+    <button data-tool="select" data-smode="lasso" title="書き込みを選ぶ。触れたものを選ぶか、何もないところから自由な形で囲む">投げ縄</button>
     <button id="bImage">画像</button>
-    <button id="bPaste" title="ほかのアプリでコピーした画像を貼り付ける">貼り付け</button>
-    <button id="bPasteObj" hidden title="選択して「コピー」したものを、表示中のページに貼る。別のページや別のPDFにも貼れる">コピーを貼る</button>
+    <button id="bPaste" title="ほかのアプリでコピーした画像を貼る">貼り付け</button>
+    <button id="bPasteClip" title="このアプリで「コピー」した書き込みを貼る（ほかのページ・ほかのPDFにも貼れる）">コピーを貼る</button>
   </div>
   <div class="grp">
     <button id="bUndo">取り消す</button>
@@ -111,57 +111,52 @@
 <div id="stage">
   <div id="world"></div>
   <canvas id="overlay"></canvas>
-  <!-- 何かを選んでいる間だけ出る操作。選んだものの種類に合わせて、使える項目だけが出る -->
+  <!-- 書き込みを選んでいる間だけ出る操作。選んだものの種類に応じて、使える項目だけを出す -->
   <div id="selBar" hidden>
-    <div class="srow">
-      <span id="selCols" title="選んだ線・図形の色を変える">
-        <button class="col" data-selcolor="#111111" style="--c:#111111" aria-label="黒にする"></button>
-        <button class="col" data-selcolor="#d00000" style="--c:#d00000" aria-label="赤にする"></button>
-        <button class="col" data-selcolor="#0050d0" style="--c:#0050d0" aria-label="青にする"></button>
-        <button class="col" data-selcolor="#008a3c" style="--c:#008a3c" aria-label="緑にする"></button>
-        <button class="col" data-selcolor="#f5c400" style="--c:#f5c400" aria-label="黄にする"></button>
-        <button class="col" data-selcolor="#ffffff" style="--c:#ffffff" aria-label="白にする"></button>
-      </span>
-      <select id="sSelW" title="選んだ線・図形の線の太さ">
-        <option value="">太さ</option>
-        <option value="0.8">細</option>
-        <option value="1.6">中</option>
-        <option value="3.2">太</option>
-        <option value="4.8">マーカー細</option>
-        <option value="9.6">マーカー中</option>
-        <option value="19.2">マーカー太</option>
-      </select>
-      <select id="sSelA" title="選んだ線の不透明度（小さいほど透ける）">
-        <option value="">不透明度</option>
-        <option value="1">不透明 100%</option>
-        <option value="0.75">不透明 75%</option>
-        <option value="0.5">不透明 50%</option>
-        <option value="0.35">不透明 35%</option>
-        <option value="0.25">不透明 25%</option>
-      </select>
-      <select id="sSelF" title="選んだ図形の塗り。数字は濃さ">
-        <option value="">塗り</option>
-        <option value="0">塗りなし</option>
-        <option value="0.25">塗り 25%</option>
-        <option value="0.5">塗り 50%</option>
-        <option value="0.75">塗り 75%</option>
-        <option value="1">塗り 100%</option>
-      </select>
-      <select id="sSelAr" title="選んだ直線の矢印">
-        <option value="">矢印</option>
-        <option value="0">矢印なし</option>
-        <option value="1">片矢印 →</option>
-        <option value="2">両矢印 ↔</option>
-      </select>
+    <span id="selInfo"></span>
+    <div class="sg" id="sgColor" title="選択したものの色">
+      <button class="col" data-scolor="#111111" style="--c:#111111" aria-label="黒"></button>
+      <button class="col" data-scolor="#d00000" style="--c:#d00000" aria-label="赤"></button>
+      <button class="col" data-scolor="#0050d0" style="--c:#0050d0" aria-label="青"></button>
+      <button class="col" data-scolor="#008a3c" style="--c:#008a3c" aria-label="緑"></button>
+      <button class="col" data-scolor="#f5c400" style="--c:#f5c400" aria-label="黄"></button>
+      <button class="col light" data-scolor="#ffffff" style="--c:#ffffff" aria-label="白"></button>
     </div>
-    <div class="srow">
-      <span id="selInfo"></span>
-      <button id="bAddSel" title="オンの間は、押したものや囲んだものを選択に足す（選択済みのものを押すと外す）">追加選択</button>
-      <button id="bGroup" title="選んだものを1つのまとまりにする。まとめて選ばれ、動かす・大きさを変える・回す・コピー・削除ができる">グループ化</button>
-      <button id="bUngroup" title="まとまりを解いて、1つずつ選べるようにする">グループ解除</button>
+    <div class="sg" id="sgWidth" title="選択した線の太さ">
+      <button data-swidth="s">細</button>
+      <button data-swidth="m">中</button>
+      <button data-swidth="l">太</button>
+    </div>
+    <select id="sSelAlpha" title="選択した線の不透明度（小さいほど透ける）">
+      <option value="" disabled>不透明度 —</option>
+      <option value="1">不透明度 100%</option>
+      <option value="0.75">不透明度 75%</option>
+      <option value="0.5">不透明度 50%</option>
+      <option value="0.35">不透明度 35%</option>
+      <option value="0.25">不透明度 25%</option>
+    </select>
+    <select id="sSelFill" title="選択した図形の塗り。数字は濃さ">
+      <option value="" disabled>塗り —</option>
+      <option value="0">塗りなし</option>
+      <option value="0.25">塗り 25%</option>
+      <option value="0.5">塗り 50%</option>
+      <option value="0.75">塗り 75%</option>
+      <option value="1">塗り 100%</option>
+    </select>
+    <select id="sSelArrow" title="選択した直線の矢印">
+      <option value="" disabled>矢印 —</option>
+      <option value="0">矢印なし</option>
+      <option value="1">終点に矢印</option>
+      <option value="3">始点に矢印</option>
+      <option value="2">両矢印</option>
+    </select>
+    <div class="sg">
+      <button id="bAddSel" title="オンの間は、押したものや囲んだものを選択に足す（選択済みのものを押すと外す）。オンの間は枠の内側を押しても動かさない">追加選択</button>
+      <button id="bGroup" title="選択したものを1つのまとまりにする">グループ化</button>
+      <button id="bUngroup" title="グループを元の個別の書き込みに戻す">グループ解除</button>
+      <button id="bCopy" title="選択したものをコピーする。「コピーを貼る」で、ほかのページやPDFにも貼れる">コピー</button>
       <button id="bFront" title="選択したものを、ほかの書き込みより手前に出す">最前面へ</button>
       <button id="bBack" title="選択したものを、ほかの書き込みより奥へ送る（PDFより奥にはなりません）">最背面へ</button>
-      <button id="bCopy" title="選択したものをコピーする。「コピーを貼る」で、別のページや別のPDFにも貼れる">コピー</button>
       <button id="bDelete">削除</button>
     </div>
   </div>
