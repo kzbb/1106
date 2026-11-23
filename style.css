@@ -71,6 +71,11 @@ button.col.light.on::after { border: 2px solid #555; }
 .strow .err { color: #ff6b6b; }
 #stPanel p { margin: 0; font-size: 12px; color: #bbb; white-space: pre-wrap; }
 #bStClose { align-self: flex-end; }
+#stNote { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid #444; }
+#stNote[hidden] { display: none; }
+#stNote .warn { color: #ffa94d; }
+#stNote ol { margin: 0; padding-left: 1.4em; font-size: 12px; color: #ddd; }
+#stNote li + li { margin-top: 4px; }
 
 #stage {
   position: relative; flex: 1; min-height: 0; overflow: hidden;

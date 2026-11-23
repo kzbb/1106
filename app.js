@@ -112,8 +112,9 @@ const saveErrText = e => (e && e.name === 'QuotaExceededError'
    保存とオフラインの状態はツールバーに常に出さず、変わったときだけ右上に短く出して消す。
    保存の失敗（赤）とオフライン準備の失敗（橙）は、解決するか一覧で見るまで出したままにする。
    通知を押すと状態の一覧を開く。
-   stat.save: saved / dirty（保存待ち）/ error、stat.off: none（使えない）/ preparing / ready / failed */
-const stat = { save: 'saved', saveErr: '', off: 'none', offSeen: false };
+   stat.save: saved / dirty（保存待ち）/ error、stat.off: none（使えない）/ preparing / ready / failed
+   stat.note: 直前の操作で起きた問題と解決策 {title, body, steps}。一覧で見るまで橙の通知に出す */
+const stat = { save: 'saved', saveErr: '', off: 'none', offSeen: false, note: null, noteSeen: false };
 let toastTimer = 0;
 function showToast(text, level) {
   const t = $('toast');
@@ -123,8 +124,13 @@ function showToast(text, level) {
 // 消えずに残す通知。保存の失敗を優先する
 function stickyToast() {
   if (stat.save === 'error') return ['保存できませんでした', 'err'];
+  if (stat.note && !stat.noteSeen) return [stat.note.title + '（押すと対処法）', 'warn'];
   if (stat.off === 'failed' && !stat.offSeen) return ['オフラインの準備に失敗しました', 'warn'];
   return null;
+}
+function setNote(note) {
+  stat.note = note; stat.noteSeen = false;
+  restToast();
 }
 // 短い通知を出す。ms が 0 なら次の通知まで出したままにする
 function notify(text, level = '', ms = 1500) {
@@ -141,6 +147,12 @@ function restToast() {
 }
 function syncStatePanel() {
   if ($('stPanel').hidden) return;
+  const n = stat.note;
+  $('stNote').hidden = !n;
+  if (n) {
+    $('stNoteT').textContent = n.title; $('stNoteB').textContent = n.body;
+    $('stNoteL').replaceChildren(...n.steps.map(s => Object.assign(document.createElement('li'), { textContent: s })));
+  }
   const put = (id, text, level, msgId, msg) => {
     $(id).textContent = text; $(id).className = level || '';
     $(msgId).textContent = msg || ''; $(msgId).hidden = !msg;
@@ -160,7 +172,7 @@ function syncStatePanel() {
 }
 function openStatePanel() {
   $('stPanel').hidden = false;
-  stat.offSeen = true;                       // 一覧で見たオフラインの失敗は、通知に出し続けない
+  stat.offSeen = stat.noteSeen = true;       // 一覧で見た問題は、通知に出し続けない
   restToast();
 }
 $('toast').onclick = openStatePanel;
@@ -1481,13 +1493,33 @@ for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEve
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 /* ---------- 画像 ---------- */
+// 写真を受け取れなかったとき（空のファイル、読めないファイル、オフラインで何も届かない）の説明と解決策。
+// iCloud写真で「ストレージを最適化」にしていると、オリジナルが端末にない写真はオフラインでは届かない
+function photoFail() {
+  const on = navigator.onLine;
+  setNote({
+    photo: true,
+    title: '写真を読み込めませんでした',
+    body: on
+      ? 'この画像の形式を読み込めないか、写真のダウンロードに失敗しました。次のどれかで貼れます。'
+      : 'iCloud写真で「iPadのストレージを最適化」にしていると、オリジナルが端末にない写真は、オフラインでは読み込めません。次のどれかで貼れます。',
+    steps: [
+      ...(on ? [] : ['オンラインにしてから、もう一度「画像」で選ぶ']),
+      'スクリーンショットを撮り、左下に出る縮小画面を押して範囲を切り取り、「完了」→「コピーして削除」を選んでから、このアプリの「貼り付け」で貼る（オフラインでも使える）',
+      '前もって「ファイル」アプリの「このiPad内」に保存した画像を、「画像」→「ファイルを選択」から選ぶ',
+      '設定 →「写真」で「ダウンロードしてオリジナルを保持」にしておく（端末の空き容量が必要）',
+    ],
+  });
+}
 async function addImage(blob) {
-  if (!pdf || busy || !blob) return;
+  if (!pdf || busy) return;
+  if (!blob || !blob.size) { photoFail(); return; }
   const doc = pdf;
   const url = URL.createObjectURL(blob);
   try {
     const img = new Image();
-    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('画像を読み込めません')); img.src = url; });
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(Object.assign(new Error('画像を読み込めません'), { photo: true })); img.src = url; });
+    if (stat.note && stat.note.photo) stat.note = null;   // 前に読み込めなかったときの説明は、読み込めたら片付ける
     const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight));
     const c = document.createElement('canvas');
     c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
@@ -1517,7 +1549,7 @@ async function addImage(blob) {
     S.tool = 'select'; setSel(sh.page, [it]);
     drawAnn(sh); drawOverlay(); syncUI(); touch();
   } catch (e) {
-    alert(e.message);
+    if (e.photo) photoFail(); else alert(e.message);
   } finally { URL.revokeObjectURL(url); }
 }
 document.addEventListener('paste', e => {
@@ -1913,8 +1945,19 @@ document.querySelectorAll('[data-width]').forEach(b => b.onclick = () => setOpt(
 }));
 $('bUndo').onclick = () => stepHistory(undo, redo);
 $('bRedo').onclick = () => stepHistory(redo, undo);
-$('bImage').onclick = () => $('fImg').click();
-$('fImg').onchange = e => { addImage(e.target.files[0]); e.target.value = ''; };
+// 写真を選ぶ。オフラインでは、iCloudにしかない写真を選ぶと何も届かないことがあるので、
+// 選ぶ画面が閉じたのに何も届かなければ説明を出す（オンラインなら、選ぶのをやめただけとみなす）
+let imgPending = false;
+const imgNone = () => {
+  if (!imgPending) return;
+  imgPending = false;
+  if (!navigator.onLine) photoFail();
+};
+$('bImage').onclick = () => { imgPending = true; $('fImg').click(); };
+$('fImg').onchange = e => { imgPending = false; addImage(e.target.files[0]); e.target.value = ''; };
+$('fImg').addEventListener('cancel', imgNone);
+// cancel を出さないブラウザ向け: 画面に戻ってから少し待っても届かなければ、何も届かなかったとみなす
+window.addEventListener('focus', () => { if (imgPending) setTimeout(imgNone, 1500); });
 $('bPaste').onclick = pasteFromClipboard;
 $('bDelete').onclick = deleteSel;
 $('bLeft').onclick = () => turn(S.rtl ? 1 : -1);

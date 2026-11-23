@@ -5,7 +5,7 @@
    を実行すること（VERSION が変わらないと利用者の端末は更新されない）。 */
 
 // @@BUILD_START
-const VERSION = '8b1d3e7e70c7';
+const VERSION = 'd9d332459fa9';
 const FILES = [
   "./",
   "app.js",

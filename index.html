@@ -115,6 +115,12 @@
   <!-- 状態の通知。保存したときや異常があるときだけ右上に出る。押すと状態の一覧を開く -->
   <div id="toast" role="status" aria-live="polite"></div>
   <div id="stPanel" hidden>
+    <!-- 直前の操作で起きた問題と、その解決策（写真を読み込めなかったときなど） -->
+    <div id="stNote" hidden>
+      <b id="stNoteT" class="warn"></b>
+      <p id="stNoteB"></p>
+      <ol id="stNoteL"></ol>
+    </div>
     <div class="strow"><span>作業内容</span><b id="stSave"></b></div>
     <p id="stSaveMsg" hidden></p>
     <div class="strow"><span>オフライン</span><b id="stOff"></b></div>
