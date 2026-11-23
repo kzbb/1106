@@ -75,8 +75,6 @@
     <button id="bLeft">◀</button>
     <button id="bPage" title="ページ番号を指定して移動">-</button>
     <button id="bRight">▶</button>
-    <span id="status"></span>
-    <span id="net"></span>
     <button id="bUpdate" hidden title="新しい版に切り替えます（作業内容は保持されます）">更新</button>
   </div>
   <!-- メニューの中身。PDFの操作と、たまにしか使わない設定 -->
@@ -105,12 +103,24 @@
     <div class="mrow"><span>データ</span>
       <button id="bImport" title="「書き出し」で保存した作業データを、新しいPDFとして読み込む">作業データを読み込む</button>
     </div>
+    <div class="mrow"><span>状態</span>
+      <button id="bState" class="mclose" title="作業内容の保存と、オフラインで使えるかを表示する">保存とオフライン</button>
+    </div>
   </div>
 </div>
 
 <div id="stage">
   <div id="world"></div>
   <canvas id="overlay"></canvas>
+  <!-- 状態の通知。保存したときや異常があるときだけ右上に出る。押すと状態の一覧を開く -->
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="stPanel" hidden>
+    <div class="strow"><span>作業内容</span><b id="stSave"></b></div>
+    <p id="stSaveMsg" hidden></p>
+    <div class="strow"><span>オフライン</span><b id="stOff"></b></div>
+    <p id="stOffMsg" hidden></p>
+    <button id="bStClose">閉じる</button>
+  </div>
   <!-- 書き込みを選んでいる間だけ出る操作。選んだものの種類に応じて、使える項目だけを出す -->
   <div id="selBar" hidden>
     <span id="selInfo"></span>

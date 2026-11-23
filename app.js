@@ -108,10 +108,75 @@ const saveErrText = e => (e && e.name === 'QuotaExceededError'
   ? '端末の保存容量が足りません。使わないPDFを「閉じる」で減らすか、端末の空き容量を増やしてください。'
   : '念のため「書き出し」でPDFを保存し、アプリを再起動してください。') + '\n(' + (e && e.message || e) + ')';
 
+/* ---------- 状態の通知 ----------
+   保存とオフラインの状態はツールバーに常に出さず、変わったときだけ右上に短く出して消す。
+   保存の失敗（赤）とオフライン準備の失敗（橙）は、解決するか一覧で見るまで出したままにする。
+   通知を押すと状態の一覧を開く。
+   stat.save: saved / dirty（保存待ち）/ error、stat.off: none（使えない）/ preparing / ready / failed */
+const stat = { save: 'saved', saveErr: '', off: 'none', offSeen: false };
+let toastTimer = 0;
+function showToast(text, level) {
+  const t = $('toast');
+  t.textContent = text;
+  t.className = 'show' + (level ? ' ' + level : '');
+}
+// 消えずに残す通知。保存の失敗を優先する
+function stickyToast() {
+  if (stat.save === 'error') return ['保存できませんでした', 'err'];
+  if (stat.off === 'failed' && !stat.offSeen) return ['オフラインの準備に失敗しました', 'warn'];
+  return null;
+}
+// 短い通知を出す。ms が 0 なら次の通知まで出したままにする
+function notify(text, level = '', ms = 1500) {
+  clearTimeout(toastTimer);
+  showToast(text, level);
+  if (ms) toastTimer = setTimeout(restToast, ms);
+}
+// 短い通知のあと: 解決していない異常があればそれを出し、なければ隠す
+function restToast() {
+  clearTimeout(toastTimer);
+  const s = stickyToast();
+  if (s) showToast(...s); else $('toast').className = '';
+  syncStatePanel();
+}
+function syncStatePanel() {
+  if ($('stPanel').hidden) return;
+  const put = (id, text, level, msgId, msg) => {
+    $(id).textContent = text; $(id).className = level || '';
+    $(msgId).textContent = msg || ''; $(msgId).hidden = !msg;
+  };
+  const sv = {
+    saved: ['端末に保存済み'], dirty: ['保存待ち', '', '書き込みのあと、まもなく保存します。'],
+    error: ['保存できませんでした', 'err', stat.saveErr],
+  }[stat.save];
+  put('stSave', sv[0], sv[1], 'stSaveMsg', sv[2]);
+  const of = {
+    ready: ['使える', '', 'アプリ一式を端末に保存してあります。'],
+    preparing: ['準備中', 'warn', 'アプリ一式を端末に保存しています。終わるまでオンラインのままにしてください。'],
+    failed: ['準備に失敗しました', 'warn', '次にオンラインで起動したときに、もう一度保存します。'],
+    none: ['使えない', 'warn', 'https で開いていないか、このブラウザが対応していません。'],
+  }[stat.off];
+  put('stOff', of[0], of[1], 'stOffMsg', of[2]);
+}
+function openStatePanel() {
+  $('stPanel').hidden = false;
+  stat.offSeen = true;                       // 一覧で見たオフラインの失敗は、通知に出し続けない
+  restToast();
+}
+$('toast').onclick = openStatePanel;
+$('bState').onclick = openStatePanel;
+$('bStClose').onclick = () => { $('stPanel').hidden = true; };
+// 一覧の外を押したら閉じる。閉じるために押しただけなので、ページには何も描かない
+document.addEventListener('pointerdown', e => {
+  if ($('stPanel').hidden || e.target.closest('#stPanel, #toast, #bState, #bMenu')) return;
+  $('stPanel').hidden = true;
+  if (e.target.closest('#stage')) e.stopPropagation();
+}, true);
+
 let saveTimer = 0, dirty = false, assetsDirty = false, saveAlerted = false;
 function touch() {
   dirty = true;
-  $('status').textContent = '未保存';
+  if (stat.save !== 'error') stat.save = 'dirty';   // 失敗中は、保存できるまで失敗の表示を残す
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 400);
 }
@@ -126,15 +191,16 @@ function save() {
     if (d) { s.put(st, d.k + 'state'); if (as) s.put(as, d.k + 'assets'); }
     return s.put(meta, 'meta');
   }).then(() => {
-    $('status').textContent = '保存済み';
-    $('status').classList.remove('err');
+    const wasErr = stat.save === 'error';
+    stat.save = dirty ? 'dirty' : 'saved'; stat.saveErr = '';
+    notify(wasErr ? '保存できました' : '保存済み');
     saveAlerted = false;
     return true;
   }, e => {
     console.error(e);
     if (d === D) { dirty = true; if (as) assetsDirty = true; }   // 次の保存で書き直す
-    $('status').textContent = '保存失敗';
-    $('status').classList.add('err');
+    stat.save = 'error'; stat.saveErr = saveErrText(e);
+    restToast();
     if (!saveAlerted && !document.hidden) {       // 失敗が続いている間は1回だけ知らせる
       saveAlerted = true;
       alert('作業内容を端末に保存できませんでした。\n' + saveErrText(e));
@@ -269,7 +335,7 @@ async function addPdf(file) {
     docs = [...docs, entry];
     const d = doc; doc = null;
     await enterDoc(entry, st, as, buf, d);
-    $('status').textContent = '保存済み';
+    notify('保存済み');
   } catch (e) {
     console.error(e);
     if (doc) doc.destroy().catch(() => {});
@@ -306,7 +372,7 @@ function closeDoc() {
       try { await activate(next.id); }
       catch (e) { console.error(e); alert('PDFを切り替えられませんでした: ' + e.message); }
     }
-    $('status').textContent = '保存済み';
+    notify('保存済み');
   });
 }
 
@@ -775,7 +841,7 @@ function startPinch() {
 }
 
 stage.addEventListener('pointerdown', e => {
-  if (!pdf || busy || e.target.closest('#empty, #selBar')) return;
+  if (!pdf || busy || e.target.closest('#empty, #selBar, #toast, #stPanel')) return;
   e.preventDefault();
   const isTouch = e.pointerType === 'touch';
   if (isTouch) {
@@ -1568,7 +1634,7 @@ function copySel() {
   const as = {};
   for (const it of leaves(items)) if (it.t === 'i' && assets[it.a]) as[it.a] = assets[it.a];
   clip = { items: JSON.parse(JSON.stringify(items)), assets: as, doc: D.id, page: sel.page, n: 0 };
-  $('status').textContent = items.length > 1 ? `${items.length}個をコピー` : 'コピーしました';
+  notify(items.length > 1 ? `${items.length}個をコピー` : 'コピーしました');
   syncUI();
 }
 function pasteClip() {
@@ -1669,7 +1735,7 @@ async function exportPdf(kind) {
     $('expMsg').textContent = 'ファイルを作成しています…';
     $('bExpWith').disabled = $('bExpWithout').disabled = $('bExpData').disabled = true;
   } else $('dlg').close();
-  $('status').textContent = '書き出し中';
+  notify('書き出し中…', '', 0);
   try {
     const file = kind === 'data' ? buildBackup()
       : new File([await buildPdf(kind)], (S.name || 'script').replace(/\.pdf$/i, '') + '_書き込み.pdf', { type: 'application/pdf' });
@@ -1680,11 +1746,11 @@ async function exportPdf(kind) {
       $('dlg').close();
       download(file);
     }
-    $('status').textContent = '保存済み';
+    notify(viaShare ? 'ファイルを作成しました' : '書き出しました');
   } catch (e) {
     console.error(e);
     $('dlg').close();
-    $('status').textContent = '';
+    restToast();
     alert('書き出しに失敗しました: ' + e.message);
   }
 }
@@ -1895,22 +1961,28 @@ function setupSW() {
   const sw = navigator.serviceWorker;
   if (!sw || !isSecureContext) return;      // HTTPSでない場合は従来どおりオンラインのみで動く
   let reg = null, hadController = !!sw.controller, reloading = false;
-  const net = $('net');
   const showUpdate = () => { $('bUpdate').hidden = false; };
+  const failed = () => { stat.off = 'failed'; stat.offSeen = false; restToast(); };   // 次回の起動で再試行
   const watch = w => w && w.addEventListener('statechange', () => {
     if (w.state === 'installed' && sw.controller) showUpdate();
-    if (w.state === 'redundant' && !sw.controller) net.textContent = '';   // 取り込み失敗。次回の起動で再試行
+    if (w.state === 'redundant' && !sw.controller) failed();
   });
 
-  if (!sw.controller) net.textContent = 'オフライン準備中';
-  sw.ready.then(() => { net.textContent = 'オフライン可'; });
+  // 初めての取り込みのときだけ、始まりと終わりを知らせる。取り込み済みなら何も出さない
+  if (sw.controller) stat.off = 'ready';
+  else { stat.off = 'preparing'; notify('オフラインの準備中…', '', 2500); }
+  sw.ready.then(() => {
+    const first = stat.off !== 'ready';
+    stat.off = 'ready';
+    if (first) notify('オフラインで使えるようになりました', '', 2500); else syncStatePanel();
+  });
 
   sw.register('sw.js').then(r => {
     reg = r;
     if (r.waiting && sw.controller) showUpdate();
     watch(r.installing);
     r.addEventListener('updatefound', () => watch(r.installing));
-  }).catch(e => { console.error(e); net.textContent = ''; });
+  }).catch(e => { console.error(e); failed(); });
 
   // ホーム画面のアプリは切り替えて戻っても再読み込みされないので、表に出るたびに更新を確認する
   const check = () => { if (reg && navigator.onLine) reg.update().catch(() => {}); };
@@ -1951,7 +2023,7 @@ function setupSW() {
       // 前回表示していたPDFから順に試し、最初に開けたものを表示する
       const first = docs.find(d => d.id === meta.active);
       for (const d of first ? [first, ...docs.filter(x => x !== first)] : docs) {
-        try { await activate(d.id); $('status').textContent = '復元済み'; break; }
+        try { await activate(d.id); notify('復元済み'); break; }
         catch (e) { console.error(e); }
       }
     } catch (e) { console.error(e); }
