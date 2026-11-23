@@ -1712,6 +1712,10 @@ function syncUI() {
   if (pdf) {
     const pg = spreadOf(S.cur);
     $('bPage').textContent = (pg.length > 1 ? `${pg[0] + 1}-${pg[1] + 1}` : `${pg[0] + 1}`) + ` / ${pdf.numPages}`;
+    // 先頭・末尾では、それ以上進めない側のボタンを無効にする（綴じ方向で左右が入れ替わる。turn() と同じ条件）
+    const atFirst = pg[0] === 0, atLast = pg[pg.length - 1] + 1 >= pdf.numPages;
+    $(S.rtl ? 'bRight' : 'bLeft').disabled = atFirst;
+    $(S.rtl ? 'bLeft' : 'bRight').disabled = atLast;
   }
 }
 // 道具のボタンが今の道具か。図形と選択は、同じ道具の中の種類（data-shape / data-smode）まで見る
