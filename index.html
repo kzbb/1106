@@ -69,6 +69,8 @@
     <button id="bUndo">取り消す</button>
     <button id="bRedo">やり直す</button>
   </div>
+  <!-- 状態の通知。保存したときや異常があるときだけ、ページ送りの左の空いた所に出る。押すと状態の一覧を開く -->
+  <div id="msg" role="status" aria-live="polite"></div>
   <!-- ページ送り -->
   <div class="grp nav">
     <button id="bLeft">◀</button>
@@ -111,8 +113,6 @@
 <div id="stage">
   <div id="world"></div>
   <canvas id="overlay"></canvas>
-  <!-- 状態の通知。保存したときや異常があるときだけ右上に出る。押すと状態の一覧を開く -->
-  <div id="toast" role="status" aria-live="polite"></div>
   <div id="stPanel" hidden>
     <!-- 直前の操作で起きた問題と、その解決策（写真を読み込めなかったときなど） -->
     <div id="stNote" hidden>

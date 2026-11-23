@@ -109,7 +109,8 @@ const saveErrText = e => (e && e.name === 'QuotaExceededError'
   : '念のため「書き出し」でPDFを保存し、アプリを再起動してください。') + '\n(' + (e && e.message || e) + ')';
 
 /* ---------- 状態の通知 ----------
-   保存とオフラインの状態はツールバーに常に出さず、変わったときだけ右上に短く出して消す。
+   保存とオフラインの状態は常には出さず、変わったときだけツールバーのページ送りの左（#msg）に短く出して消す。
+   #msg はツールバーの空いた幅だけを使い、入りきらない分は … で切る（段を増やさない）。全文は状態の一覧に出す。
    保存の失敗（赤）とオフライン準備の失敗（橙）は、解決するか一覧で見るまで出したままにする。
    通知を押すと状態の一覧を開く。
    stat.save: saved / dirty（保存待ち）/ error、stat.off: none（使えない）/ preparing / ready / failed
@@ -117,15 +118,15 @@ const saveErrText = e => (e && e.name === 'QuotaExceededError'
 const stat = { save: 'saved', saveErr: '', off: 'none', offSeen: false, note: null, noteSeen: false };
 let toastTimer = 0;
 function showToast(text, level) {
-  const t = $('toast');
-  t.textContent = text;
+  const t = $('msg');
+  t.textContent = text; t.title = text;      // … で切れたときも、押さえれば全文が出る
   t.className = 'show' + (level ? ' ' + level : '');
 }
-// 消えずに残す通知。保存の失敗を優先する
+// 消えずに残す通知。保存の失敗を優先する。狭い画面でも読めるよう短くする
 function stickyToast() {
-  if (stat.save === 'error') return ['保存できませんでした', 'err'];
-  if (stat.note && !stat.noteSeen) return [stat.note.title + '（押すと対処法）', 'warn'];
-  if (stat.off === 'failed' && !stat.offSeen) return ['オフラインの準備に失敗しました', 'warn'];
+  if (stat.save === 'error') return ['保存できません', 'err'];
+  if (stat.note && !stat.noteSeen) return [stat.note.short || stat.note.title, 'warn'];
+  if (stat.off === 'failed' && !stat.offSeen) return ['オフライン準備失敗', 'warn'];
   return null;
 }
 function setNote(note) {
@@ -142,7 +143,7 @@ function notify(text, level = '', ms = 1500) {
 function restToast() {
   clearTimeout(toastTimer);
   const s = stickyToast();
-  if (s) showToast(...s); else $('toast').className = '';
+  if (s) showToast(...s); else $('msg').className = '';
   syncStatePanel();
 }
 function syncStatePanel() {
@@ -175,12 +176,12 @@ function openStatePanel() {
   stat.offSeen = stat.noteSeen = true;       // 一覧で見た問題は、通知に出し続けない
   restToast();
 }
-$('toast').onclick = openStatePanel;
+$('msg').onclick = openStatePanel;
 $('bState').onclick = openStatePanel;
 $('bStClose').onclick = () => { $('stPanel').hidden = true; };
 // 一覧の外を押したら閉じる。閉じるために押しただけなので、ページには何も描かない
 document.addEventListener('pointerdown', e => {
-  if ($('stPanel').hidden || e.target.closest('#stPanel, #toast, #bState, #bMenu')) return;
+  if ($('stPanel').hidden || e.target.closest('#stPanel, #msg, #bState, #bMenu')) return;
   $('stPanel').hidden = true;
   if (e.target.closest('#stage')) e.stopPropagation();
 }, true);
@@ -853,7 +854,7 @@ function startPinch() {
 }
 
 stage.addEventListener('pointerdown', e => {
-  if (!pdf || busy || e.target.closest('#empty, #selBar, #toast, #stPanel')) return;
+  if (!pdf || busy || e.target.closest('#empty, #selBar, #msg, #stPanel')) return;
   e.preventDefault();
   const isTouch = e.pointerType === 'touch';
   if (isTouch) {
@@ -1499,7 +1500,7 @@ function photoFail() {
   const on = navigator.onLine;
   setNote({
     photo: true,
-    title: '写真を読み込めませんでした',
+    title: '写真を読み込めませんでした', short: '写真を読めません',
     body: on
       ? 'この画像の形式を読み込めないか、写真のダウンロードに失敗しました。次のどれかで貼れます。'
       : 'iCloud写真で「iPadのストレージを最適化」にしていると、オリジナルが端末にない写真は、オフラインでは読み込めません。次のどれかで貼れます。',
@@ -1801,7 +1802,7 @@ async function exportPdf(kind) {
       $('dlg').close();
       download(file);
     }
-    notify(viaShare ? 'ファイルを作成しました' : '書き出しました');
+    notify(viaShare ? 'ファイル作成済み' : '書き出しました');
   } catch (e) {
     console.error(e);
     $('dlg').close();
@@ -2034,11 +2035,11 @@ function setupSW() {
 
   // 初めての取り込みのときだけ、始まりと終わりを知らせる。取り込み済みなら何も出さない
   if (sw.controller) stat.off = 'ready';
-  else { stat.off = 'preparing'; notify('オフラインの準備中…', '', 2500); }
+  else { stat.off = 'preparing'; notify('オフライン準備中…', '', 2500); }
   sw.ready.then(() => {
     const first = stat.off !== 'ready';
     stat.off = 'ready';
-    if (first) notify('オフラインで使えるようになりました', '', 2500); else syncStatePanel();
+    if (first) notify('オフライン対応済み', '', 2500); else syncStatePanel();
   });
 
   sw.register('sw.js').then(r => {

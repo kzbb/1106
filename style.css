@@ -46,18 +46,17 @@ button.col.light.on::after { border: 2px solid #555; }
 #bPage { min-width: 92px; font-variant-numeric: tabular-nums; }
 #bUpdate { background: #0a66d8; border-color: #3d8cf0; }
 
-/* 状態の通知（右上）。show の間だけ出る。warn = 橙、err = 赤。
-   「保存済み」などの短い通知は書き込みのたびに出るので押せないようにし、下のページにそのまま書けるようにする。
-   押して状態の一覧を開けるのは、残り続ける橙と赤の通知だけ */
-#toast {
-  position: absolute; top: 10px; right: 10px; z-index: 6; max-width: calc(100% - 20px);
-  padding: 7px 12px; border-radius: 8px; font-size: 13px; color: #eee; cursor: pointer;
-  background: #2c2c30ee; border: 1px solid #000; box-shadow: 0 2px 10px #0006;
-  opacity: 0; transform: translateY(-6px); pointer-events: none; transition: opacity .25s, transform .25s;
+/* 状態の通知。ページ送りの左に置き、その行の空いた幅だけを使う（flex-basis 0 なので折り返しの原因にならない）。
+   入りきらない分は … で切る。margin-left で、増えたぶんの隙間（#bar の gap）を打ち消す。
+   show の間だけ出て押せる。warn = 橙、err = 赤 */
+#msg {
+  flex: 1 1 0; min-width: 0; margin-left: -12px; padding: 0 2px; text-align: right;
+  font-size: 12px; color: #9a9aa0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; pointer-events: none; transition: opacity .25s; cursor: pointer;
 }
-#toast.show { opacity: 1; transform: none; }
-#toast.warn { background: #c76a00f0; color: #fff; font-weight: bold; pointer-events: auto; }
-#toast.err { background: #c62828f0; color: #fff; font-weight: bold; pointer-events: auto; }
+#msg.show { opacity: 1; pointer-events: auto; }
+#msg.warn { color: #ffa94d; font-weight: bold; }
+#msg.err { color: #ff6b6b; font-weight: bold; }
 /* 状態の一覧（通知かメニューの「保存とオフライン」で開く） */
 #stPanel {
   position: absolute; top: 10px; right: 10px; z-index: 7; width: min(340px, calc(100% - 20px));
