@@ -5,7 +5,7 @@
    を実行すること（VERSION が変わらないと利用者の端末は更新されない）。 */
 
 // @@BUILD_START
-const VERSION = '16425a38708b';
+const VERSION = 'df2e66675eee';
 const FILES = [
   "./",
   "app.js",
@@ -130,7 +130,6 @@ const FILES = [
   "vendor/pdfjs/cmaps/KSCpc-EUC-H.bcmap",
   "vendor/pdfjs/cmaps/KSCpc-EUC-V.bcmap",
   "vendor/pdfjs/cmaps/Katakana.bcmap",
-  "vendor/pdfjs/cmaps/LICENSE",
   "vendor/pdfjs/cmaps/NWP-H.bcmap",
   "vendor/pdfjs/cmaps/NWP-V.bcmap",
   "vendor/pdfjs/cmaps/RKSJ-H.bcmap",
@@ -197,8 +196,6 @@ const FILES = [
   "vendor/pdfjs/standard_fonts/FoxitSerifBoldItalic.pfb",
   "vendor/pdfjs/standard_fonts/FoxitSerifItalic.pfb",
   "vendor/pdfjs/standard_fonts/FoxitSymbol.pfb",
-  "vendor/pdfjs/standard_fonts/LICENSE_FOXIT",
-  "vendor/pdfjs/standard_fonts/LICENSE_LIBERATION",
   "vendor/pdfjs/standard_fonts/LiberationSans-Bold.ttf",
   "vendor/pdfjs/standard_fonts/LiberationSans-BoldItalic.ttf",
   "vendor/pdfjs/standard_fonts/LiberationSans-Italic.ttf",
